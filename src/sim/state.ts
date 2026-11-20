@@ -89,7 +89,18 @@ export function copyStateInto(next: SimulationState, prev: DeepReadonly<Simulati
   copyFighterInto(next.fighters[1], prev.fighters[1]);
   const he = next.history.entries;
   const pe = prev.history.entries;
-  for (let i = 0; i < HISTORY_SIZE; i++) Object.assign(he[i]!, pe[i]!);
+  for (let i = 0; i < HISTORY_SIZE; i++) {
+    const d = he[i]!;
+    const s = pe[i]!;
+    // Buffers alternate, so most slots already match; skip them cheaply.
+    if (d.at === s.at && d.x === s.x && d.facing === s.facing && d.fsm === s.fsm && d.attackId === s.attackId && d.phase === s.phase) continue;
+    d.at = s.at;
+    d.x = s.x;
+    d.facing = s.facing;
+    d.fsm = s.fsm;
+    d.attackId = s.attackId;
+    d.phase = s.phase;
+  }
   next.history.head = prev.history.head;
   next.history.count = prev.history.count;
   next.result = copyResult(prev.result, next.result);

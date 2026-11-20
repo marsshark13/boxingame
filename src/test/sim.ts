@@ -7,7 +7,15 @@ import { expect } from 'vitest';
 import { loadConfig, type CompiledConfig } from '../sim/config/compile';
 import { defaultConfig } from '../sim/config/defaults';
 import type { GameConfig } from '../sim/config/schema';
-import { COMMAND_BITS, type CommandMask, type CommandType, type FighterCommand, type FighterId, type TickInput } from '../sim/types';
+import {
+  COMMAND_BITS,
+  type CommandMask,
+  type CommandType,
+  type FighterCommand,
+  type FighterId,
+  type SimulationState,
+  type TickInput,
+} from '../sim/types';
 
 // --- Config helpers ---------------------------------------------------------------------
 
@@ -49,6 +57,30 @@ export function deepEqualStrict(a: unknown, b: unknown): boolean {
     if (!deepEqualStrict((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k])) return false;
   }
   return true;
+}
+
+/**
+ * Per-Tick comparison for long runs (design §14.2 mitigation): every field of both states
+ * except the 120 older history slots. Those slots are only ever written as "newest entry",
+ * so comparing entries[head] on every Tick plus one full deepEqualStrict at the end covers them.
+ */
+export function sameCompact(a: SimulationState, b: SimulationState): boolean {
+  return (
+    a.tick === b.tick &&
+    a.gameplayTick === b.gameplayTick &&
+    a.hitStopRemaining === b.hitStopRemaining &&
+    a.matchStartAt === b.matchStartAt &&
+    a.seed === b.seed &&
+    a.configFingerprint === b.configFingerprint &&
+    a.version === b.version &&
+    a.ruleset === b.ruleset &&
+    deepEqualStrict(a.rng, b.rng) &&
+    deepEqualStrict(a.fighters, b.fighters) &&
+    deepEqualStrict(a.result, b.result) &&
+    a.history.head === b.history.head &&
+    a.history.count === b.history.count &&
+    deepEqualStrict(a.history.entries[a.history.head], b.history.entries[b.history.head])
+  );
 }
 
 export function expectSame(actual: unknown, expected: unknown, message?: string): void {

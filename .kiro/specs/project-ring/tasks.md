@@ -170,32 +170,32 @@ Conventions: "Property N" refers to the design's Correctness Properties section.
     - AI decision runs before intake in step 2; an external `ai` command is dropped while the AI is enabled and accepted with `ai.enabled = false`; the AI uses the same acceptance rules as the player (approach ignored while not Able_To_Act)
     - _Requirements: 12.1, 2.2, 15.1, 35.1_
 
-- [ ] 9. Implement serialization, `createMatch`, and the MatchDriver
-  - [ ] 9.1 Implement JSON serialization and strict parsing
+- [x] 9. Implement serialization, `createMatch`, and the MatchDriver
+  - [x] 9.1 Implement JSON serialization and strict parsing
     - `src/sim/serialize.ts`: `serialize(state)` via `JSON.stringify`; `parseSimulationState(json, cfg)` checks shape, integer ranges, finiteness, history length 121, `head`/`count` ranges, consecutive `at` values ending at `gameplayTick`; returns `invalid-Simulation_State` or `config-mismatch` (fingerprint compare) without touching the caller's state
     - _Requirements: 3.4, 3.6, 3.8, 3.9, 12.11_
-  - [ ] 9.2 Implement `createMatch` and `MatchDriver`
+  - [x] 9.2 Implement `createMatch` and `MatchDriver`
     - `createMatch(rawConfig)` in `src/sim/index.ts` returns `{ ok: true, driver } | { ok: false, errors }` and produces nothing until validation passes
     - `src/sim/driver.ts`: two preallocated state buffers swapped each Tick, `tick(playerMask)` (builds `TickInput` from the player mask only, calls `stepInto`, appends to a reused frame event array), `beginFrame()`, `view()` returning `{ prev, curr, alpha }` as `DeepReadonly`, `setAlpha`, `restart()` (fresh initial state copied into both buffers)
     - _Requirements: 1.5, 2.2, 2.4, 5.4, 12.12, 13.4, 13.5, 13.6_
-  - [ ]* 9.3 Write property test for Property 1: Determinism (with AI)
+  - [x]* 9.3 Write property test for Property 1: Determinism (with AI)
     - **Property 1: Determinism (with AI)**
     - Include the 1–600 Tick variant and the up-to-10,800 Tick variant (design §13.2); compare with `Object.is` deep equality
     - **Validates: Requirements 3.1, 3.3, 3.7**
-  - [ ]* 9.4 Write property test for Property 2: Serialization round trip
+  - [x]* 9.4 Write property test for Property 2: Serialization round trip
     - **Property 2: Serialization round trip**
     - Also assert that no reached state contains `-0`
     - **Validates: Requirements 3.4, 12.11**
-  - [ ]* 9.5 Write property test for Property 3: Restore equivalence
+  - [x]* 9.5 Write property test for Property 3: Restore equivalence
     - **Property 3: Restore equivalence**
     - **Validates: Requirements 3.5**
-  - [ ]* 9.6 Write property test for Property 4: Invalid serialized states are rejected
+  - [x]* 9.6 Write property test for Property 4: Invalid serialized states are rejected
     - **Property 4: Invalid serialized states are rejected**
     - **Validates: Requirements 3.6**
-  - [ ]* 9.7 Write property test for Property 25: Configuration fingerprint mismatch is rejected
+  - [x]* 9.7 Write property test for Property 25: Configuration fingerprint mismatch is rejected
     - **Property 25: Configuration fingerprint mismatch is rejected**
     - **Validates: Requirements 3.8, 3.9**
-  - [ ]* 9.8 Write property test for Property 21: Restart identity
+  - [x]* 9.8 Write property test for Property 21: Restart identity
     - **Property 21: Restart identity**
     - **Validates: Requirements 12.12, 13.4, 13.6**
 

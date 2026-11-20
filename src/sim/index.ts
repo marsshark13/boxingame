@@ -2,6 +2,9 @@
 export * from './types';
 export { step, stepInto, ableToAct, type StepOptions } from './step';
 export { decideAi, type AiDecision } from './ai';
+export { createMatch, type CreateMatchResult } from './match';
+export { MatchDriver, type DriverView } from './driver';
+export { serialize, parseSimulationState, type ParseResult } from './serialize';
 export { createInitialState, copyStateInto, cloneState } from './state';
 export { HISTORY_SIZE, observationFor, observe } from './observation';
 export { M1_TRANSITIONS, activeTable, type TransitionRule } from './fsm';
