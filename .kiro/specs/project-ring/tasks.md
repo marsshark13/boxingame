@@ -39,15 +39,15 @@ Conventions: "Property N" refers to the design's Correctness Properties section.
     - If the installed R3F version fails this test, switch to the design fallback: ticker at priority 1, visual callbacks after it, and one final callback that calls `gl.render` manually; update the constants and the test accordingly
     - _Requirements: 1.5, 34.4_
 
-- [ ] 3. Implement core simulation types, fixed-point helpers, and the PRNG
-  - [ ] 3.1 Define the M1 types and fixed-point helpers
+- [x] 3. Implement core simulation types, fixed-point helpers, and the PRNG
+  - [x] 3.1 Define the M1 types and fixed-point helpers
     - `src/sim/types.ts`: `FighterId`, `CommandType`, `FighterCommand`, `TickInput`, `CMD` bit constants, `CommandMask`, `M1_ENABLED_MASK`, `GTick`, `AttackPhase`, `FsmState` union (Idle, Walking, Attacking, HitStun, Defeated), `FighterState`, `RngState`, `PlayerObservation`, `ObservationHistory`, `MatchResult`, `SimulationState` (version 1, ruleset `'m1'`, `tick`, `gameplayTick`, `hitStopRemaining`, `matchStartAt`, `seed`, `configFingerprint`, `rng`, `fighters`, `history`, `result`), `StepResult`, `GameEvent` (M1), `AttackDefinition`, `CompiledAttack`, `DeepReadonly`
     - `src/sim/fixed.ts`: `toFx`, `fromFx`, `i32` (normalizes `-0`), `roundHalfUp`
     - _Requirements: 2.2, 2.6, 4.1, 4.2, 4.7, 5.1, 3.2_
-  - [ ] 3.2 Implement the sfc32 PRNG
+  - [x] 3.2 Implement the sfc32 PRNG
     - `src/sim/rng.ts`: splitmix32 seeding of four uint32 words from a 32-bit seed, 12 warm-up steps, `next(rng)` using only `Math.imul`, `+`, `>>>`, `|`, `^`; state stored as `[a, b, c, d]`
     - _Requirements: 3.2_
-  - [ ]* 3.3 Write unit tests for fixed-point helpers and sfc32
+  - [x]* 3.3 Write unit tests for fixed-point helpers and sfc32
     - sfc32 known-answer vectors for seeds 0, 1, and 4,294,967,295; `i32(-0)` is `0`; `roundHalfUp` at `.5` boundaries
     - _Requirements: 3.2_
 
