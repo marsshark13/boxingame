@@ -101,17 +101,17 @@ Conventions: "Property N" refers to the design's Correctness Properties section.
     - Initial state is Idle, max Health, facing each other, `tick` 0; table-driven scenarios for `move`, `stop`, `attack`, `attack-end`; jab during Attacking discarded; Walking with both directions goes Idle
     - _Requirements: 4.9, 11.1, 13.1, 15.1_
 
-- [ ] 6. Implement movement, separation, and facing (pipeline step 6)
-  - [ ] 6.1 Implement `applyMovement` and `updateFacing` and wire them into step 6
+- [x] 6. Implement movement, separation, and facing (pipeline step 6)
+  - [x] 6.1 Implement `applyMovement` and `updateFacing` and wire them into step 6
     - `src/sim/movement.ts`: boundary limit first (D38), then separation shortening only toward-movement with the D39 split (odd 1 Fx to the larger toward-mover, Player_Fighter on ties, share cap with remainder to the other Fighter), defensive clamp, `i32` writes; per-Fighter displacement inputs so P2 speeds plug in later; `updateFacing` at the end of step 6
     - _Requirements: 7.1, 7.4, 7.5, 7.6, 7.8, 7.10, 35.1_
-  - [ ]* 6.2 Write property test for Property 12: Movement and separation model
+  - [x]* 6.2 Write property test for Property 12: Movement and separation model
     - **Property 12: Movement and separation model**
     - **Validates: Requirements 7.1, 7.4, 7.5, 7.6**
-  - [ ]* 6.3 Write property test for Property 11: State invariants
+  - [x]* 6.3 Write property test for Property 11: State invariants
     - **Property 11: State invariants**
     - **Validates: Requirements 1.1, 4.1, 7.8, 7.10, 11.2**
-  - [ ]* 6.4 Write unit tests for clamping and separation
+  - [x]* 6.4 Write unit tests for clamping and separation
     - Walk into left and right walls; walk into the opponent (exact `minSeparation`); even shortfall; odd shortfall with unequal and equal toward-movement; share above one Fighter's toward-movement; the wall-and-opponent case of design §7.2
     - _Requirements: 7.5, 7.6, 15.1_
 

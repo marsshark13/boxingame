@@ -4,6 +4,7 @@
 // only `prev`, the Tick's player commands, and the compiled config (Req 2 c3, Req 3 c3).
 import type { CompiledConfig } from './config/compile';
 import { newFsmTickContext, transition, type FsmTickContext } from './fsm';
+import { applyMovement, updateFacing } from './movement';
 import { recordObservation } from './observation';
 import { cloneState, copyStateInto } from './state';
 import {
@@ -170,10 +171,13 @@ export function stepInto(
     selectAction(next.fighters[0], mask[0], cfg, ctx),
     selectAction(next.fighters[1], mask[1], cfg, ctx),
   ];
-  void moveDir; // consumed by step 6 (task 6)
 
   // (5) Stamina deduction [P2]. M1: no-op.
-  // (6) Movement, separation, facing: task 6.
+
+  // (6) Movement limited to the Ring_Boundary, then separation, then facing (D38, D39).
+  applyMovement(next.fighters, moveDir, cfg);
+  updateFacing(next.fighters);
+
   // (7) Hit detection and outcomes: task 7.
   // (8) Health-zero checks: task 7.
   // (9) Round timer and round end [P3]. M1: no-op.
