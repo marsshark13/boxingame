@@ -95,16 +95,17 @@ test.prop([arbCase])('Property 22: every corrupted field is reported, and only t
   cfg.attacks = JSON.parse(JSON.stringify(attacks)) as GameConfig['attacks'];
   const regs = cfg.attacks as unknown as Record<string, unknown>[];
 
-  // Apply id corruptions first, so duplicates only copy ids that stay valid and first-seen.
-  const idBroken = new Set<number>();
-  for (const c of corruptions.filter((c) => c.field === 'id')) {
+  // Apply id corruptions first. A duplicate copies the id of an earlier attack whose own id is
+  // not corrupted, so the copied id stays valid and first-seen at its source.
+  const idCorruptions = corruptions.filter((c) => c.field === 'id');
+  const idBroken = new Set<number>(idCorruptions.map((c) => c.attack));
+  for (const c of idCorruptions) {
     if (c.kind % 2 === 0) {
       setPath(regs[c.attack]!, 'id', MISSING);
     } else {
       const sources = regs.map((_, j) => j).filter((j) => j < c.attack && !idBroken.has(j));
-      setPath(regs[c.attack]!, 'id', regs[sources[c.kind % sources.length]!]!['id']); // jab (0) always qualifies
+      setPath(regs[c.attack]!, 'id', attacks[sources[c.kind % sources.length]!]!.id); // jab (0) always qualifies
     }
-    idBroken.add(c.attack);
   }
   for (const c of corruptions.filter((c) => c.field !== 'id')) {
     setPath(regs[c.attack]!, c.field, corruptValue(c.field, getPath(regs[c.attack]!, c.field), c.kind));
