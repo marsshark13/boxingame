@@ -32,8 +32,8 @@ Conventions: "Property N" refers to the design's Correctness Properties section.
     - Node test that imports `src/sim/index.ts` and asserts `typeof window === 'undefined'` and that the import succeeds; a lint fixture that proves a banned import in `src/sim` fails ESLint
     - _Requirements: 2.1, 2.3, 15.5_
 
-- [ ] 2. Verify React Three Fiber `useFrame` priority ordering (design Q11)
-  - [ ] 2.1 Implement and test the frame-order contract
+- [x] 2. Verify React Three Fiber `useFrame` priority ordering (design Q11)
+  - [x] 2.1 Implement and test the frame-order contract
     - Create `src/render/frameOrder.ts` exporting `TICKER_PRIORITY` and `VISUAL_PRIORITY` constants used by every later `useFrame` call
     - Write `src/render/frameOrder.test.tsx` with `@react-three/test-renderer`: a callback registered with `useFrame(cb, -1)` runs before priority-0 callbacks in the same frame, and R3F's automatic render still happens (render not taken over)
     - If the installed R3F version fails this test, switch to the design fallback: ticker at priority 1, visual callbacks after it, and one final callback that calls `gl.render` manually; update the constants and the test accordingly

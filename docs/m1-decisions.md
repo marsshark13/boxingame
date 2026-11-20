@@ -43,3 +43,11 @@ All versions are pinned exactly (`.npmrc` `save-exact=true`).
 - Stop for approval at Task 10 and Task 16.
 - Commit after each completed task or task group; never commit failing or unverified work.
 - Optional (`*`) M1 test tasks are implemented where practical.
+
+## Verification results
+
+- **Design Q11 (Task 2):** on @react-three/fiber 9.8.2, `useFrame(cb, -1)` runs before
+  priority-0 callbacks in the same frame and R3F's automatic render still runs
+  (`internal.priority === 0`). The design's primary approach is kept; the fallback was not
+  needed. Verified through R3F's real loop (`advance`), because test-renderer's
+  `advanceFrames` calls subscribers directly and never renders.
