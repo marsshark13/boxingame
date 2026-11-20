@@ -51,26 +51,26 @@ Conventions: "Property N" refers to the design's Correctness Properties section.
     - sfc32 known-answer vectors for seeds 0, 1, and 4,294,967,295; `i32(-0)` is `0`; `roundHalfUp` at `.5` boundaries
     - _Requirements: 3.2_
 
-- [ ] 4. Implement configuration defaults, validation, compilation, and fingerprint
-  - [ ] 4.1 Create the default config and the M1 Attack_Registry
+- [x] 4. Implement configuration defaults, validation, compilation, and fingerprint
+  - [x] 4.1 Create the default config and the M1 Attack_Registry
     - `src/sim/config/defaults.ts` (ring, start positions, `minSeparation`, `walkSpeed`, hurtbox, `maxHealth`, `ai.enabled`, `ai.reactionDelay`, `ai.attackInterval`, seed) and `src/sim/config/attacks.ts` (jab only), in world units
     - _Requirements: 5.1, 5.2, 9.1, 11.1_
-  - [ ] 4.2 Implement zod schemas and cross-field checks
+  - [x] 4.2 Implement zod schemas and cross-field checks
     - `src/sim/config/schema.ts`: field ranges of design §2.7 and D2 Tick ranges for attacks; unique ids; exactly one jab with strictly lowest startup; empty registry error `attacks: empty registry`; ring width, start-position, and separation checks of design §7.4 run on compiled Fx values
     - Collect every issue (zod `safeParse` plus appended cross-field errors), each naming the setting or `attacks[id or index].field`; never adjust or default values
     - _Requirements: 5.4, 5.5, 5.6, 7.7, 7.11, 9.1, 11.9, 12.4, 12.5, 3.2_
-  - [ ] 4.3 Implement config compilation, jab reachability, and fingerprint
+  - [x] 4.3 Implement config compilation, jab reachability, and fingerprint
     - `src/sim/config/compile.ts`: convert to Fx once; build `CompiledAttack` (`hitboxFx`, `total`, `reachFx`, `connectRange2`, `nearEdge2`, `reach {dLo, dHi}`); refuse with `attacks[jab]: cannot connect at any distance >= minSeparation` or `attacks[jab]: near edge exceeds minSeparation; AI jab distances would miss` (design §8.4)
     - `src/sim/fingerprint.ts`: FNV-1a 32-bit over canonical JSON of the validated config (sorted keys, attacks in registry order, authored world-unit numbers); store on the compiled config
     - _Requirements: 15.7, 15.8, 3.8, 5.3_
-  - [ ]* 4.4 Write property test for Property 22: Attack definition validation reports every invalid field
+  - [x]* 4.4 Write property test for Property 22: Attack definition validation reports every invalid field
     - **Property 22: Attack definition validation reports every invalid field**
     - **Validates: Requirements 5.4, 5.5**
-  - [ ]* 4.5 Write property test for Property 26: Jab reachability matches brute-force overlap
+  - [x]* 4.5 Write property test for Property 26: Jab reachability matches brute-force overlap
     - **Property 26: Jab reachability matches brute-force overlap**
     - Use the `arbReachConfig` generator of design §13.2
     - **Validates: Requirements 15.7, 15.8**
-  - [ ]* 4.6 Write unit tests for configuration validation and fingerprint
+  - [x]* 4.6 Write unit tests for configuration validation and fingerprint
     - Ring width equal to and below `minSeparation`; each start position out of bounds and too close; `maxHealth` 0, 1001, 1.5; `reactionDelay` 121; `attackInterval` 0 and 601; non-boolean `ai.enabled`; seed out of range; missing jab; jab not strictly fastest; no vertical overlap; near edge beyond `minSeparation`; every Req 5 c5 rejection case and several errors reported together
     - FNV-1a known-answer vector; key order does not change the fingerprint; changing one value does
     - _Requirements: 5.5, 5.6, 7.7, 7.11, 9.1, 11.9, 15.1, 15.8, 3.8_
