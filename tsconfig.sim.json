@@ -1,0 +1,12 @@
+{
+  // Req 2 c1, c3 / design §1.4: the Game_Simulation and Simulation_Loop are type-checked
+  // with no DOM library and no ambient types, so window, document, performance,
+  // requestAnimationFrame, AudioContext, etc. are compile errors here.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "types": []
+  },
+  "include": ["src/sim/**/*.ts", "src/loop/**/*.ts"],
+  "exclude": ["src/**/*.test.ts"]
+}

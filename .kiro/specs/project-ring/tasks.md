@@ -10,25 +10,25 @@ Conventions: "Property N" refers to the design's Correctness Properties section.
 
 ### M1 – Playable Prototype
 
-- [ ] 1. Set up the project, tooling, and architecture enforcement
-  - [ ] 1.1 Scaffold the Vite + React + TypeScript application
+- [x] 1. Set up the project, tooling, and architecture enforcement
+  - [x] 1.1 Scaffold the Vite + React + TypeScript application
     - Create the Vite React-TS project in the workspace root with `base: './'` in `vite.config.ts`, no SSR, and no runtime `import.meta.env` values
     - Install runtime dependencies: `three`, `@react-three/fiber`, `react`, `react-dom`, `zustand`, `zod`; dev dependencies: `typescript`, `tailwindcss` (with PostCSS config and `src/index.css` directives), `vitest`, `jsdom`, `fast-check`, `@fast-check/vitest`, `@react-three/test-renderer`, `@testing-library/react`, `@playwright/test`, `eslint`, `@typescript-eslint/*`
     - Create the directory skeleton of design §1.2 (`src/sim`, `src/sim/config`, `src/sim/ai`, `src/loop`, `src/input`, `src/render`, `src/ui`, `src/app`, `bench/`, `e2e/`) with placeholder `index.ts` files where needed
     - Add `index.html` with a `#boot-status` element and self-hosted font setup (no CDN or Google Fonts)
     - _Requirements: 14.1, 14.2, 14.4, 14.5_
-  - [ ] 1.2 Configure the Vitest `sim` and `ui` projects and property-test helpers
+  - [x] 1.2 Configure the Vitest `sim` and `ui` projects and property-test helpers
     - `vitest.config.ts` (or workspace file) with project `sim` (`environment: 'node'`, includes `src/sim/**`, `src/loop/**`, `src/input/inputSampler*`, `src/render/cameraMath*`, and later the pure presentation modules) and project `ui` (`environment: 'jsdom'`, includes `src/ui/**`, `src/app/**`, `src/render/**/*.test.tsx`)
     - Create `src/test/fc.ts`: `fc.configureGlobal({ numRuns: 100 })`, `FC_SEED` env replay, and a helper that prints seed and path on failure
     - Add npm scripts `test` (`vitest --run`), `typecheck`, `lint`, `build`, `preview`, `bench`, `e2e`
     - _Requirements: 15.2, 15.3, 15.4, 15.5_
-  - [ ] 1.3 Add ESLint import and global restrictions and `tsconfig.sim.json`
+  - [x] 1.3 Add ESLint import and global restrictions and `tsconfig.sim.json`
     - ESLint `no-restricted-imports` for `src/sim/**` and `src/loop/**`: ban `react`, `react-dom`, `three`, `three/*`, `@react-three/*`, `zustand`, and relative imports into `src/render`, `src/ui`, `src/app`, `src/input`
     - ESLint `no-restricted-globals` / `no-restricted-properties` for the same scope: `window`, `document`, `navigator`, `performance`, `Date`, `requestAnimationFrame`, `AudioContext`, `setTimeout`, `Math.random`, and transcendental `Math` functions (`Math.pow`, `Math.sin`, `Math.cos`, `Math.exp`, `Math.log`) per design §14.2
     - Encode the allowed import direction of design §1.4 for the other modules (`render → sim types, ui/stores`; `ui → sim types`; `input → sim command constants`; `loop → nothing`)
     - `tsconfig.sim.json` with `"lib": ["ES2022"]`, `"types": []`, covering `src/sim` and `src/loop`; include it in `npm run typecheck`
     - _Requirements: 2.1, 2.3, 15.5_
-  - [ ]* 1.4 Write the architecture smoke test
+  - [x]* 1.4 Write the architecture smoke test
     - Node test that imports `src/sim/index.ts` and asserts `typeof window === 'undefined'` and that the import succeeds; a lint fixture that proves a banned import in `src/sim` fails ESLint
     - _Requirements: 2.1, 2.3, 15.5_
 
