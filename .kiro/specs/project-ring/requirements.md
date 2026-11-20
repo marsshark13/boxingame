@@ -510,15 +510,18 @@ Where a requirement is tagged with one phase but a single acceptance criterion b
 2. WHEN a Fighter becomes Able_To_Act while the Input_Buffer holds an unexpired command, THE Fighter_FSM SHALL start that attack on that Tick and clear the Input_Buffer.
 3. IF a held command's 6 Ticks end before the Fighter becomes Able_To_Act, THEN THE Input_Buffer SHALL discard it.
 4. IF a Fighter in a non-bufferable state (D12) receives an attack Fighter_Command, THEN THE Input_Buffer SHALL discard it.
-5. THE Attack_Registry SHALL define for each Attack_Definition a Cancel_Window as integer start and end Ticks counted from the first Recovery_Phase Tick (0-based), and a list of 0–4 permitted follow-up attacks.
+5. WHERE an Attack_Definition defines a Cancel_Window, THE Attack_Registry SHALL store the Cancel_Window as integer start and end Ticks counted from the first Recovery_Phase Tick (0-based), with a list of 0–4 permitted follow-up attacks.
 6. WHEN a Fighter whose current attack landed a hit (D13) receives or holds a permitted follow-up command on a Tick within its Cancel_Window, THE Fighter_FSM SHALL end the current attack and start the follow-up's Startup_Phase on that Tick.
 7. WHEN an attack lands while the struck Fighter is not in HitStun, THE Game_Simulation SHALL set the attacker's combo counter to 1.
 8. WHEN an attack lands while the struck Fighter is still in HitStun from the attacker's previous hit, THE Game_Simulation SHALL increment the combo counter by 1 and emit a combo Game_Event with the attacker and the new count (D14).
 9. WHEN a struck Fighter leaves HitStun, THE Game_Simulation SHALL reset the attacker's combo counter to 0.
 10. THE Combat_Resolver SHALL apply the combo damage-scaling factor (0.5–1.0) per Requirement 35 criterion 7, with n equal to the attacker's combo counter after the update in criterion 7 or 8 for the current hit (D37).
 11. IF a Cancel_Window's end Tick is before its start Tick or beyond the last Recovery_Phase Tick, THEN THE Game_Simulation SHALL reject that Attack_Definition per Requirement 5.
-12. THE Game_Simulation SHALL update a Fighter's combo counter exactly once per landed hit by that Fighter, and SHALL leave the combo counter unchanged for blocked or slip-evaded attacks.
+12. THE Game_Simulation SHALL update a Fighter's combo counter exactly once per landed hit by that Fighter, except that a 0 hit-stun hit on a Fighter in HitStun leaves the counter unchanged (D41).
 13. WHEN a Trade occurs, THE Game_Simulation SHALL update each attacker's combo counter independently, evaluating the "struck Fighter is in HitStun" condition from the shared snapshot (Requirement 35 criterion 4).
+14. WHEN an attack is blocked or slip-evaded, THE Game_Simulation SHALL leave the attacker's combo counter unchanged.
+15. IF an Attack_Definition defines no Cancel_Window, THEN THE Fighter_FSM SHALL let no follow-up attack cancel that attack.
+16. IF an Attack_Definition has 0 recovery Ticks, THEN THE Game_Simulation SHALL reject a Cancel_Window on it per Requirement 5.
 
 ### Requirement 21: Counterpunches
 

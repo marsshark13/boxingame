@@ -4,7 +4,7 @@
 
 Project RING is a client-only 3D arcade boxing game. Its core is a pure TypeScript Game_Simulation that advances one fixed 1/60 s Tick per call, owns all gameplay state in one plain-data, JSON-serializable Simulation_State, and is driven only by per-Tick Fighter_Commands. A thin browser shell around it supplies those commands from the keyboard (Input_System) and from a deterministic AI_Controller, advances it from a fixed-timestep accumulator (Simulation_Loop), and draws interpolated results with React Three Fiber plus a React/Tailwind HUD. Keeping the simulation free of time, DOM, and rendering dependencies makes it deterministic, replayable, and testable in Node with property-based tests.
 
-> **Note:** This document is written in parts. Part 1 covers core architecture and M1. Part 2 (P2 full combat) is included in the section "Part 2: Full Combat (P2)", placed after Part 1's Components and Interfaces. Parts 3–4 (P3 match structure, P4 presentation) will be appended later.
+> **Note:** This document is written in four parts, and all four are now written. Part 1 (core architecture and M1) is sections 1–12. Parts 2, 3, and 4 follow Part 1's Components and Interfaces as "Part 2: Full Combat (P2)", "Part 3: Match Structure and Menus (P3)", and "Part 4: Presentation and Polish (P4)". Error Handling, Testing Strategy, Correctness Properties, and Open Questions and Risks hold the entries of all four parts.
 
 Conventions: "Req 10 c6" means Requirement 10, acceptance criterion 6. "D4" refers to Design Decision D4 in requirements.md. "Fx" is the fixed-point position unit defined in section 2.
 
@@ -1153,7 +1153,7 @@ All checks run in `config/p2Schema.ts` after the Part 1 checks. Errors are colle
 | `combo.scaling` | number | 0.5–1.0 | 20 c10 |
 | `counter.damageMultiplier` | number | 1.0–3.0 | 21 c3 |
 | `counter.hitStunMultiplier` | number | 1.0–3.0 | 21 c4 |
-| `attacks[*].cancelWindow` | `{ start, end }` integers, 0-based from the first Recovery_Phase Tick | required in `'p2'`; `0 ≤ start ≤ end ≤ recovery − 1` | 20 c5, c11 |
+| `attacks[*].cancelWindow` | `{ start, end }` integers, 0-based from the first Recovery_Phase Tick | optional (D44; absent = no cancels); when present `0 ≤ start ≤ end ≤ recovery − 1` | 20 c5, c11 |
 | `attacks[*].followUps` | `AttackId[]` | 0–4 ids, each an id in the registry | 20 c5 |
 | registry relations | cross-field | P2.4 | 16 c1–c4, c8 |
 | `ai.difficulties.{easy,normal,hard}` | `DifficultyProfile` | P2.10.1 | 22 c2, c3, c8, c11 |
@@ -1565,7 +1565,7 @@ if (from.kind === 'HitStun' && to.kind !== 'HitStun') opponentOf(f).comboCounter
 
 #### P2.8.2 Cancel_Window
 
-`cancelWindow = { start, end }` counts from the first Recovery_Phase Tick, 0-based (Req 20 c5). Validation (Req 20 c11) rejects `end < start` and `end > recovery − 1` (beyond the last Recovery_Phase Tick); negative values already fail Req 5 c5. A definition with `recovery = 0` therefore cannot have a valid window, and Req 20 c5 requires a window on every definition, so such a definition is rejected in `'p2'` mode (P2-Q10).
+`cancelWindow = { start, end }` counts from the first Recovery_Phase Tick, 0-based (Req 20 c5). Validation (Req 20 c11) rejects `end < start` and `end > recovery − 1` (beyond the last Recovery_Phase Tick); negative values already fail Req 5 c5. A definition with `recovery = 0` therefore cannot have a valid window; under D44 the window is optional, so such a definition simply omits it and never cancels (`cancelOpen` returns false when `cancelWindow` is absent).
 
 ```ts
 function cancelOpen(f, g, cfg): boolean {                     // D13, Req 20 c6
@@ -1877,6 +1877,1117 @@ New P2 properties are Properties 29–48 in the Correctness Properties section. 
 
 ---
 
+## Part 3: Match Structure and Menus (P3)
+
+Part 3 adds Knockdowns, KO and TKO, three rounds, scoring, the Main_Menu, the Pause_Menu, the Results_Screen, and the full Fight_HUD (Req 23–30). As in Part 2, nothing is redesigned. The pipeline (section 5), the FSM rule tables (sections 6, P2.5.4), movement (section 7), the two-phase Combat_Resolver (sections 8, P2.9), the in-Tick AI with threaded PRNG and AI memory (sections 9, P2.10, D40, D44), and the double-buffered `MatchDriver` all stay. Part 3 adds a ruleset flag, state fields, FSM rows, and work inside existing pipeline steps, mostly steps 3, 8, and 9. Simulation code lives in `src/sim` under the same import ban (section 1.4); menus, pause, and screens live in `src/ui` and `src/app`.
+
+New files in `src/sim`: `p3/rounds.ts` (Round_Manager, step 9), `p3/knockdown.ts` (Knockdown entry, count, rise, repositioning), `p3/scoring.ts` (Scoring_System), `p3/session.ts` (`MatchSession`, seed policy), `config/p3Schema.ts`. `fsm.ts` gains `P3_TRANSITIONS`. New UI files: `src/ui/MainMenu.tsx`, `src/ui/menuModel.ts` (pure focus reducer), `src/ui/PauseMenu.tsx`, `src/ui/ResultsScreen.tsx`, `src/ui/hudLabels.ts` (pure label tracker), `src/ui/StaminaBar.tsx`, `src/ui/GuardBar.tsx`, `src/ui/RoundClock.tsx`; `src/app/pauseController.ts`.
+
+### P3.1 Ruleset and State Extensions
+
+#### P3.1.1 Ruleset flag
+
+```ts
+export type Ruleset = 'm1' | 'match';            // GameConfig.ruleset; default 'match' from P3
+
+// compile.ts
+cfg.match = raw.ruleset === 'match' ? compileMatch(raw) : null;   // CompiledMatch | null
+```
+
+- `'match'` requires `combat: 'p2'`; otherwise initialization is refused with `config.ruleset: 'match' requires combat 'p2'` (P3-Q20). Rounds, between-round recovery, and scoring all read Stamina, Guard, and Counterpunches.
+- `'m1'` keeps the Part 1 end rules (Defeated, win or draw, `restart()`), with either combat mode. Every P3 hook in the pipeline is guarded by `cfg.match !== null`, so `'m1'` reproduces Parts 1–2 bit for bit, and Properties 1–48 keep running there as a regression suite.
+- `state.ruleset` (section 2.4) now takes `'match'`. Health 0 means KnockedDown instead of Defeated in `'match'` (Req 35 c9, Req 11 c6–c8 superseded).
+- Active FSM table in `'match'`: `M1_TRANSITIONS ++ P2_TRANSITIONS ++ P3_TRANSITIONS` with every `health-zero → Defeated` row removed (section 6.4). The Defeated state is unreachable in `'match'`.
+
+#### P3.1.2 KnockedDown and the P3 transition rows (Req 4 c4)
+
+```ts
+export type FsmStateP3 = { kind: 'KnockedDown'; enteredAt: GTick };   // rise count lives in KnockdownState
+export type FsmState = FsmStateM1 | FsmStateP2 | FsmStateP3;
+// Trigger gains: 'knockdown-freeze' | 'rise' | 'round-end'
+
+export const P3_TRANSITIONS: readonly TransitionRule[] = [
+  // Health zero (step 8), Req 23 c1, Req 35 c9, D20; replaces every health-zero -> Defeated row
+  ...(['Idle', 'Walking', 'Attacking', 'Blocking', 'Slipping', 'HitStun', 'GuardBroken'] as const)
+     .map(from => ({ from, to: 'KnockedDown', trigger: 'health-zero', step: 8 })),
+  // D21 freeze of the standing Fighter (step 8)
+  { from: 'Attacking',   to: 'Idle', trigger: 'knockdown-freeze', step: 8 },
+  { from: 'HitStun',     to: 'Idle', trigger: 'knockdown-freeze', step: 8 },   // Trade: standing Fighter was hit too
+  // Rise (step 3), Req 23 c12
+  { from: 'KnockedDown', to: 'Idle', trigger: 'rise', step: 3 },
+  // Round end by time (step 9), Req 25 c4
+  ...(['Walking', 'Attacking', 'Blocking', 'Slipping', 'HitStun', 'GuardBroken'] as const)
+     .map(from => ({ from, to: 'Idle', trigger: 'round-end', step: 9 })),
+];
+```
+
+- **Why only two freeze rows.** A Fighter's Health reaches 0 only from the opponent's contact in step 7, so the standing Fighter was Attacking in the Active_Phase in the step-7 snapshot. After step 7 it is still Attacking, or (in a Trade) HitStun, or Idle (a zero hit-stun hit, D41). Idle needs no transition. Any other state would be a defect, which `transition()` reports through the trace (section 6.3).
+- **Round end.** No KnockedDown row is needed, because a round never ends by time while a Knockdown_Count runs (P3.2). An Idle Fighter needs no transition.
+- **One transition per step (Req 4 c5).** On a Knockdown Tick the fallen Fighter takes one step-8 transition and the standing Fighter at most one. The rise is the only step-3 transition a KnockedDown Fighter can take. Leaving HitStun for KnockedDown or Idle still triggers the opponent combo reset of P2.8.1; Req 23 c23 then sets both counters to 0 anyway.
+
+#### P3.1.3 Round, Knockdown, and score state
+
+```ts
+export type RoundPhase = 'announce' | 'fighting' | 'knockdown' | 'between' | 'ended';
+
+export interface RoundState {
+  number: 1 | 2 | 3;
+  phase: RoundPhase;
+  timer: number;                    // remaining round Ticks, integer 0..duration; elapsed = duration − timer
+  startAt: GTick;                   // Gameplay_Tick at whose end this round started (0 for round 1)
+  announceUntil: GTick;             // last announcement Tick = startAt + 120 (Req 25 c2)
+  acceptFromAt: GTick;              // announceUntil + 1: first Tick that accepts commands (Req 25 c3, c11)
+  betweenUntil: GTick | null;       // last interval Tick while phase === 'between' (Req 25 c5)
+}
+
+export interface KnockdownState {   // non-null exactly while a Knockdown_Count runs (or after a KO)
+  startAt: GTick;                   // Knockdown Tick; the count is 1 on this Tick (Req 23 c2)
+  count: number;                    // 1..10 = 1 + floor((g − startAt) / 60)
+  down: [boolean, boolean];         // still KnockedDown, [player, ai]
+  rise: [number | null, number | null];   // rise count 2..10 for each Fighter knocked down at startAt
+}
+
+export interface FighterRoundStats {             // Req 26 c1, non-negative integers from 0
+  thrown: number; landed: number; blocked: number;
+  counters: number; damage: number; knockdownsScored: number;
+}
+export interface RoundScore {
+  stats: [FighterRoundStats, FighterRoundStats]; // [player, ai]
+  points: [number, number] | null;               // set when the round is scored (Req 26 c10, c11)
+}
+export interface ScoreState { rounds: [RoundScore, RoundScore, RoundScore] }
+```
+
+`timer` counts Ticks of round time, so the HUD shows `ceil(timer / 60)` seconds (Req 27 c3). All absolute values are Gameplay_Ticks (section 4, D36).
+
+#### P3.1.4 FighterState additions
+
+```ts
+export interface FighterStateP3Fields {
+  roundKnockdowns: number;          // Knockdowns suffered this round, 0..3 (Req 23 c1, Req 24 c2, c4)
+  matchKnockdowns: number;          // Knockdowns suffered this Match (Req 23 c1, c11, c12)
+  teleportedAt: GTick | null;       // last Tick this Fighter was placed without movement (Req 23 c9; round start)
+}
+```
+
+`teleportedAt` is the renderer's snap flag (P3.3.3). It is simulation data (where the Fighter is, not how it looks), so it stays within Req 2 c6.
+
+#### P3.1.5 MatchResult extension and P3 Game_Events
+
+```ts
+export type MatchMethod = 'KO' | 'TKO' | 'Decision';
+
+export interface MatchEnd {                       // ruleset 'match'
+  kind: 'win' | 'draw';                           // draw allowed for every method (D19, Req 30 c2)
+  winner: FighterId | null;                       // null iff draw
+  method: MatchMethod;
+  round: 1 | 2 | 3;
+  roundTime: number;                              // Ticks the round timer ran in that round (Req 24 c5)
+  totals: [number, number] | null;                // Decision only: total round points (Req 26 c12)
+  at: GTick;
+}
+export type MatchResult = M1MatchResult | MatchEnd;   // M1MatchResult = section 2.4 union; MatchEnd only in 'match'
+
+export type GameEventP3 =
+  | { type: 'knockdown'; at: GTick; fighter: FighterId; round: 1 | 2 | 3; roundTime: number }  // Req 23 c1
+  | { type: 'knockdown-count'; at: GTick; count: number }                                    // Req 23 c15, 2..10
+  | { type: 'round-start'; at: GTick; round: 1 | 2 | 3 }                                     // Req 25 c3
+  | { type: 'round-end'; at: GTick; round: 1 | 2 | 3 }                                       // Req 25 c4
+  | { type: 'match-end'; at: GTick; result: MatchEnd };                                      // Req 24 c5, 25 c6
+export type GameEvent = GameEventM1 | GameEventP2 | GameEventP3;
+```
+
+- **Ownership (D10).** `knockdown` is owned by the fallen Fighter, like `fighter-defeated`. `knockdown-count`, `round-start`, `round-end`, and `match-end` are match-level and go to the global queue (section 5.4), in processing-step order. A double knockdown therefore emits the player's `knockdown`, then the AI_Fighter's.
+- `knockdown.roundTime` includes the Knockdown Tick itself, whose timer decrement runs later in step 9 of the same Tick (P3.2.2); it equals `duration − timer + 1` when the event is produced in step 8 (P3-Q21).
+- Count 1 is not a `knockdown-count` event; the `knockdown` event marks it (literal Req 23 c15, "increases"; P3-Q4).
+- No `round-end` event is emitted for a round that ends by KO or TKO; `match-end.round` names it (literal Req 25 c4; P3-Q5).
+- In `'match'` the M1 `match-result` and `fighter-defeated` events are never emitted.
+
+#### P3.1.6 Simulation_State version 3
+
+```ts
+export interface SimulationStateP3 extends Omit<SimulationStateP2, 'version' | 'fighters' | 'result'> {
+  version: 3;
+  fighters: [FighterP3, FighterP3];               // FighterP3 = P2 fighter & FighterStateP3Fields
+  historyStartAt: GTick;                          // start of the current observation history (see below)
+  round: RoundState | null;                       // null in 'm1'
+  knockdown: KnockdownState | null;
+  score: ScoreState | null;                       // null in 'm1'
+  result: MatchResult | null;
+}
+```
+
+- **`historyStartAt`.** Part 1 and Part 2 pass `matchStartAt` to `observationFor` and guard the AI triggers with `k >= matchStartAt` (sections 9.3, P2.10.3). Those call sites now read `historyStartAt`. In `'m1'` it stays equal to `matchStartAt = 0` forever, so behavior is unchanged. In `'match'` each round start sets it to the round's `startAt`, which makes the Req 12 c10 fallback use the round-start observation (Req 25 c10).
+- **Initial state in `'match'`** (`createInitialState`): everything from P2.1.4, plus `round = { number: 1, phase: 'announce', timer: duration, startAt: 0, announceUntil: 120, acceptFromAt: 121, betweenUntil: null }`, `knockdown = null`, all statistics 0 and all `points = null`, both Knockdown totals 0, `teleportedAt = null`, `historyStartAt = 0`. Gameplay_Ticks 1–120 are round 1's announcement (Req 25 c2), and Tick 121 is the first Tick that accepts commands (Req 25 c3). The `'m1'` initial state has `round = knockdown = score = null`.
+- **Serialization.** One shape, `version: 3`, in all modes; any other version is `invalid-Simulation_State`. Added parse checks: `ruleset === 'match'` iff `round`, `score` are non-null; `timer` integer in `[0, duration]`; `announceUntil === startAt + 120`, `acceptFromAt === announceUntil + 1`; `betweenUntil` non-null iff `phase === 'between'`; `knockdown` non-null implies `phase` is `'knockdown'` or `'ended'`; while `phase === 'knockdown'`, `down[i]` iff Fighter i is KnockedDown, `count === 1 + floor((gameplayTick − startAt) / 60)`, `count ≤ 10`, and every `rise[i]` is null or an integer 2–10; KnockedDown outside `'knockdown'` only in `'ended'` (TKO, KO); `roundKnockdowns` 0–3 and `≤ matchKnockdowns`; statistics non-negative integers; `points` null for rounds after `round.number` and each set pair in 6–10; `result` non-null iff `phase === 'ended'`; `historyStartAt ≤ gameplayTick` and the history's oldest valid entry is not older than `historyStartAt`.
+- **Fingerprint (D42).** The canonical config serialization now includes `ruleset` and every P3 field. Each Match's effective seed (P3.7) is the config's `seed`, so a state from one Match restored under another Match's config is a `config-mismatch`.
+
+#### P3.1.7 P3 GameConfig fields and validation ranges
+
+All checks run in `config/p3Schema.ts` after the Part 1 and Part 2 checks, only when `ruleset === 'match'`. Errors are collected together and name the setting; nothing is adjusted (D22).
+
+| Field | Type / unit | Valid range | Default (tuning) | Req |
+|---|---|---|---|---|
+| `ruleset` | `'m1' \| 'match'` | `'match'` requires `combat: 'p2'` | `'match'` | P3.1.1 |
+| `rounds.duration` | integer Ticks | 1,800–10,800 | 5,400 (90 s) | 25 c1, c8 |
+| `rounds.interval` | integer Ticks | 0–3,600 | 300 | 25 c5, c8 |
+| `rounds.betweenRecovery` | integer Health | 0 to `maxHealth` | `roundHalfUp(0.2 × maxHealth)`, set in `defaults.ts` | 25 c5 |
+| `knockdown.separation` | world units | finite, `≥ minSeparation` (compared in Fx) | 2.0 | 23 c3, c10 |
+| ring width (cross-field) | Fx | `ring.max − ring.min ≥ 2 × minSeparation` | – | 23 c10, D31 |
+| `knockdown.riseBase` | integer count | 2–10 (P3-Q7) | 4 | 23 c11, D27 |
+| `knockdown.riseIncrease` | integer count | 0–8 (P3-Q7) | 2 | 23 c11, D27 |
+| `knockdown.riseVariance` | integer count | 0–8 (P3-Q7) | 2 | 23 c11 |
+| `knockdown.recoveryFraction` | number | 0–1 | 0.5 | 23 c12 |
+| `knockdown.recoveryPenalty` | number | 0–1 | 0.1 | 23 c12 |
+| `scoring.weights.{landed, damage, counter}` | integer | 0–1,000,000 (upper bound keeps sums exact; P3-Q7) | 10 / 1 / 20 | 26 c7, D23 |
+
+The 120-Tick announcement and the 60-Tick count interval are constants (Req 25 c2, Req 23 c2), not config. Error examples: `config.rounds.duration: must be an integer 1800–10800`, `config.knockdown.separation: must be at least minSeparation (0.8)`, `config.ring: width (1.4) must be at least 2 × minSeparation (1.6)`.
+
+### P3.2 Pipeline Changes per Step (Req 35 c1, c9–c11)
+
+The step order of section 5.1 is unchanged. In `'match'` the pipeline adds one gate and work in steps 3, 4, 7, 8, and 9. Two locals of `stepInto` carry information between steps; neither is state: `timerRuns` (the round phase after step 3 is `'fighting'`) and `kd` (this Tick's Knockdown entry from step 8, with any TKO outcome).
+
+#### P3.2.1 Step table
+
+| Step (Req 35 c1) | P3 work added in `'match'` | Reqs and decisions |
+|---|---|---|
+| Gate | If `prev.round.phase === 'ended'`, only `tick`, `gameplayTick`, and step 10's observation advance; steps 2a and 3–9 are skipped, and the masks are 0 | Req 24 c6 (P3.4.3) |
+| 1 Hit_Stop | None (P4). P4 will also hold the round timer on frozen Ticks (Req 25 c1) | D36 |
+| 2a AI decision | Called only when `prev.round.phase === 'fighting'`; otherwise skipped with mask 0 and PRNG state and AI memory unchanged (P3-Q19). The regular-attack reference becomes `me.lastAttackStartAt ?? round.acceptFromAt` (P3.5.3) | D40, D44, Req 25 c11 |
+| 2b Intake | Both masks are zeroed unless `prev.round.phase === 'fighting'`. This one rule covers the announcement (Req 25 c2), the between-round interval (Req 25 c5), every Tick of a Knockdown_Count (D21, Req 23 c14), the rise Tick (Req 23 c22, because `prev` still shows the count), and Match end (Req 24 c6). Zeroed masks also cannot fill an Input_Buffer, which is D12's discard rule for those phases | Req 2 c2; D12; D21 |
+| 3 Timers | P2 sub-steps (a)–(g) unchanged. New sub-step (h): Knockdown_Count advance, rises, and the timer resume when the last Fighter rises (P3.3.4). Then `timerRuns = round.phase === 'fighting'` | Req 23 c2, c12, c13, c15, c18–c22; Req 35 c1 step 3 |
+| 4 Action | Unchanged rules; masks are 0 outside `'fighting'`. `startAttack` and `cancelInto` add 1 to the attacker's punches thrown (P3.6.1) | Req 26 c2 |
+| 5 Stamina and Guard | Unchanged, including regeneration in announce, knockdown, and between phases (literal Req 19 c3, 17 c9; P3-Q1) | Req 19, 17 c9 |
+| 6 Movement | Unchanged. Masks are 0 outside `'fighting'`, so nobody walks. Left/right order is recomputed every Tick (section 7.1), which matters now because repositioning can swap sides (P3.3.3) | Req 7 |
+| 7 Combat | Runs only when `round.phase === 'fighting'` (no hits while anyone is KnockedDown, Req 23 c14). Scoring hooks in `applyLanded`, `applyBlocked`, and the Counterpunch branch (P3.6.1) | Req 23 c14; Req 26 c3–c5 |
+| 8 Health zero | `'match'`: Knockdown entry (P3.3.1) instead of Defeated. Sets `kd` | Req 23 c1, c2, c11, c17, c23; Req 24 c2, c3; Req 35 c9, c10; D19–D21 |
+| 9 Round | Round_Manager sequence of P3.2.2 | Req 24 c1, c2, c5; Req 25 c1, c3–c7; Req 26 c11, c12; Req 35 c11 |
+| 10 Events | Unchanged order rule with the P3 ownership of P3.1.5; Player_Observation recorded on every Gameplay_Tick, in every phase | D10; Req 12 c9; Req 35 c12 |
+
+#### P3.2.2 Step 9: Round_Manager sequence
+
+```ts
+function roundStep(s, timerRuns: boolean, kd: KnockdownEntry | null, g, cfg, ev) {
+  const r = s.round!;
+  // (a) Round timer (Req 25 c1, Req 23 c2, c13): runs iff the phase was 'fighting' after step 3
+  if (timerRuns && r.timer > 0) r.timer -= 1;
+  // (b) TKO from this Tick's Knockdowns, checked before round end (Req 24 c2, D19, Req 35 c11)
+  if (kd?.tko) return endMatch(s, kd.tko, 'TKO', g, cfg, ev);
+  // (c) KO: count reached 10 with a Fighter still down (Req 24 c1, D19)
+  if (r.phase === 'knockdown' && s.knockdown!.count === 10) return endMatch(s, koOutcome(s.knockdown!), 'KO', g, cfg, ev);
+  // (d) A Knockdown_Count is running: timer held (at 0 if it just reached 0), no round end (Req 35 c11)
+  if (r.phase === 'knockdown') return;
+  // (e) Round end by time (Req 25 c4, c6)
+  if (r.phase === 'fighting' && r.timer === 0) endRound(s, g, cfg, ev);   // -> 'between', or 'ended' by Decision
+  // (f) End of the between-round interval: recovery, then the next round starts (Req 25 c5)
+  if (r.phase === 'between' && g >= r.betweenUntil!) startNextRound(s, g, cfg);       // P3.5.2
+  // (g) End of the announcement (Req 25 c3)
+  if (r.phase === 'announce' && g === r.announceUntil) {
+    r.phase = 'fighting';
+    ev.global({ type: 'round-start', at: g, round: r.number });
+  }
+}
+```
+
+**Why `timerRuns` is read after step 3.** Req 25 c1 stops the timer during a Knockdown_Count, Req 23 c13 resumes it "on that Tick" when the last Fighter rises, and Req 35 c11 describes a Knockdown on the Tick the timer reaches 0. One rule satisfies all three: the timer runs on a Tick exactly when the round phase is `'fighting'` after step 3.
+
+| Tick | Phase after step 3 | Timer runs? | Why |
+|---|---|---|---|
+| Normal fighting Tick | fighting | yes | Req 25 c1 |
+| Knockdown Tick (Knockdown in step 8) | fighting | yes | Hits were resolved on it; makes Req 35 c11 reachable (P3-Q3) |
+| Ticks during the count | knockdown | no | Req 25 c1, Req 23 c2 |
+| Rise Tick of the last Fighter | fighting (set in step 3) | yes | Req 23 c13 (P3-Q3) |
+| Announcement Ticks, including the last one | announce | no | Req 25 c1, c3: first decrement is on `acceptFromAt` |
+| Interval Ticks | between | no | Req 25 c1 |
+
+A round therefore lasts exactly `duration` Ticks on which the timer ran. `roundTime` in events is `duration − timer`, which counts only those Ticks (Req 24 c5).
+
+**Req 35 c11 walk-through.** A Knockdown on Tick E whose decrement takes the timer from 1 to 0: step 8 starts the count and sets phase `'knockdown'`; step 9 (a) sets the timer to 0; (b) ends the Match if this was a third Knockdown (TKO before round end); otherwise (d) holds the timer at 0. If the Fighter rises on Tick E + 60(r−1), step 3 sets phase `'fighting'`, (a) does nothing because the timer is 0, and (e) ends the round on that rise Tick (P3-Q2). If the count reaches 10 first, (c) declares the KO.
+
+### P3.3 Knockdowns and Recovery (Req 23, D19–D21, D27, D31, D34)
+
+#### P3.3.1 Knockdown entry (step 8)
+
+`knockdownEntry` in `p3/knockdown.ts` replaces the M1 Defeated rule when `cfg.match !== null`. It runs once per Tick after step 7 and returns `kd` (P3.2).
+
+```ts
+function knockdownEntry(s, g, cfg, ev): KnockdownEntry | null {
+  const fell = [0, 1].filter(i => s.fighters[i].health === 0 && s.fighters[i].fsm.kind !== 'KnockedDown');
+  if (fell.length === 0) return null;
+  const r = s.round!, rs = s.score!.rounds[r.number - 1].stats, K = cfg.match!.knockdown;
+  const rise: [number | null, number | null] = [null, null];
+  for (const i of fell) {                                   // player first, then AI (fixed draw order)
+    const f = s.fighters[i], earlier = f.matchKnockdowns;   // Knockdowns before this one (Req 23 c11)
+    transition(f, 'KnockedDown', 'health-zero', g);         // Req 23 c1, Req 35 c9, D6, D20
+    f.roundKnockdowns += 1; f.matchKnockdowns += 1;         // Req 23 c1
+    const u = next(s.rng);                                  // exactly 1 draw per fallen Fighter, always
+    const extra = Math.floor(u * (K.riseVariance + 1) / 2 ** 32);   // uniform 0..riseVariance, exact
+    rise[i] = clamp(K.riseBase + K.riseIncrease * earlier + extra, 2, 10);  // Req 23 c11, D27
+    rs[1 - i].knockdownsScored += 1;                        // Req 26 c6 (each scores 1 in a double)
+    ev.owner(i).push({ type: 'knockdown', at: g, fighter: idOf(i), round: r.number,
+                       roundTime: cfg.match!.rounds.duration - r.timer + 1 });   // P3.1.5, P3-Q21
+  }
+  for (const f of s.fighters) { f.comboCounter = 0; f.inputBuffer = null; }      // Req 23 c23; D21
+  freezeStanding(s, fell, g);                               // D21: Attacking/HitStun -> Idle (knockdown-freeze)
+  const tko = tkoOutcome(s, fell);                          // P3.4.1; third Knockdown this round
+  if (tko) return { fell, tko };                            // no count, no repositioning (Req 24 c2)
+  s.knockdown = { startAt: g, count: 1, down: [fell.includes(0), fell.includes(1)], rise };
+  r.phase = 'knockdown';                                    // timer paused from step 9 (Req 23 c2)
+  if (fell.length === 1) reposition(s, fell[0], g, cfg);    // P3.3.3; double: nobody moves (Req 23 c17, D19)
+  setFacing(s.fighters);                                    // Req 23 c7, Req 7 c8
+  return { fell, tko: null };
+}
+```
+
+- **PRNG order (Req 3 c7, D40).** Within a Tick the draws are: AI decision draws in step 2a (P2.10.4), then one draw per fallen Fighter in step 8, player first. The draw happens even when `riseVariance = 0` and on a TKO, so the number of draws depends only on which Fighters fell, never on tuning (same policy as P2.10.4). `u · (v + 1)` is below 2^36, so the division is exact in IEEE doubles.
+- **Rise count is computed once** (Req 23 c11) and stored in `KnockdownState.rise`. A rise count of 10 means the Fighter does not rise (Req 24 c1, D27).
+- **Freeze (D21).** Both Input_Buffers are cleared on entry. Step 2b zeroes both masks on every later Tick while `prev.round.phase` is `'knockdown'` (P3.2.1), and step 7 does not run, so no hits register (Req 23 c14).
+
+#### P3.3.2 Knockdown_Count and rise (step 3, sub-step h)
+
+```ts
+function knockdownCountStep(s, g, cfg, ev) {
+  const k = s.knockdown;
+  if (k === null || s.round!.phase !== 'knockdown') return;
+  const c = 1 + Math.floor((g - k.startAt) / 60);           // +1 every 60 Ticks (Req 23 c2)
+  if (c === k.count) return;
+  k.count = c;
+  ev.global({ type: 'knockdown-count', at: g, count: c });  // Req 23 c15, values 2..10
+  for (const i of [0, 1])                                   // player first
+    if (k.down[i] && k.rise[i]! <= 9 && c === k.rise[i]) riseFighter(s, i, g, cfg);   // Req 23 c12
+  if (!k.down[0] && !k.down[1]) { s.round!.phase = 'fighting'; s.knockdown = null; }  // Req 23 c13
+}
+```
+
+A Fighter with rise count r rises on Gameplay_Tick `startAt + 60·(r − 1)`. At count 10 (`startAt + 540`) any Fighter still down stays down, and step 9 (c) declares the KO on that Tick (Req 24 c1).
+
+**Rise effects (`riseFighter`)**, all on the rise Tick:
+
+| Effect | Rule | Req / D |
+|---|---|---|
+| FSM | `KnockedDown → Idle` (`rise`, step 3); `down[i] = false` | 23 c12 |
+| Health | `clamp(roundHalfUp(maxHealth × (recoveryFraction − recoveryPenalty × (matchKnockdowns − 1))), 1, maxHealth)` | 23 c12 |
+| Stamina | Unchanged | 23 c18, D34 |
+| Guard | `guard === 0 ? guard.recovery : guard` | 23 c19, c20, D34 |
+| Clears on the rising Fighter | `pendingGuardRecovery = false` (resolved by D34), `postSlip = null`. HitStun, Block_Stun, GuardBroken, and Slipping timers live inside the FSM union, so leaving KnockedDown for Idle already removes them | 23 c21, D17, D34 |
+| Both Fighters | `comboCounter = 0`, `inputBuffer = null` | 23 c21, c22 |
+| Commands | Rise Tick: masks zero because `prev.round.phase === 'knockdown'`. From the next Tick: accepted if `round.phase` became `'fighting'`; still zero if the other Fighter is down | 23 c22, D21, D34 |
+| Round timer | Resumes on this Tick if this was the last Fighter down (`timerRuns`, P3.2.2) | 23 c13 |
+
+#### P3.3.3 Repositioning (Req 23 c3–c10, D31)
+
+All values are Fx. `F` = fallen position, `S` = standing position, `K = knockdown.separationFx`, `[B0, B1]` = Ring_Boundary.
+
+```ts
+function reposition(s, fallen: 0 | 1, g, cfg) {
+  const F = s.fighters[fallen].x, st = s.fighters[1 - fallen];
+  const d = st.x > F ? 1 : -1;                             // preferred side; st.x !== F by separation
+  const pref = F + d * K, opp = F - d * K;
+  let x: number;
+  if (B0 <= pref && pref <= B1) x = pref;                  // c3
+  else if (B0 <= opp && opp <= B1) x = opp;                // c4
+  else {
+    const dl = F - B0, dr = B1 - F;
+    x = dl !== dr ? (dl > dr ? B0 : B1)                    // c5: farther end
+                  : (d > 0 ? B1 : B0);                     // c6: tie -> preferred side
+  }
+  st.x = x; st.teleportedAt = g;                           // fallen Fighter never moves (c7)
+}
+```
+
+- **Separation invariant (c8).** In cases c3 and c4 the distance is `K ≥ minSeparation` (c10). In cases c5 and c6 the chosen end is the farther one (or either on a tie), so its distance from F is at least `(B1 − B0) / 2 ≥ minSeparation` because width `≥ 2 × minSeparation` (c10). Both checks are compile-time in Fx (P3.1.7).
+- **Side swap.** Case c4 can put the standing Fighter on the other side. `leftRight` is recomputed from `x` every Tick (P3.2.1), and `setFacing` runs right after repositioning, so facing is correct at the end of the Tick (c7).
+- **Snap flag for the renderer (c9).** `FighterView` and `CameraRig` compute `snap = curr.f.teleportedAt !== prev.f.teleportedAt`. When `snap` is true they use `curr.x` instead of `lerp(prev.x, curr.x, alpha)` for that Fighter, so the Fighter is never drawn between its old and new positions. If the teleport happened on an earlier Tick of the same frame, `prev` already holds the new position and interpolation is safe. Round starts set `teleportedAt` too (P3.5.2).
+
+#### P3.3.4 Double knockdown (D19, Req 23 c17, Req 35 c10)
+
+| Situation | Behavior |
+|---|---|
+| Both reach Health 0 on one Tick, neither at a third round Knockdown | One shared count; each has its own rise count; nobody moves; both `knockdown` events (player first) |
+| One rises, the other is still down | The risen Fighter stays Idle with zeroed masks (phase stays `'knockdown'`, D21) |
+| Both rise by count 9 | Phase `'fighting'` on the later rise Tick; timer resumes |
+| Neither rises by count 10 | Draw by KO (P3.4.1) |
+| Only one rises by count 10 | The other loses by KO |
+| Third Knockdown in the round for both / for one | Draw by TKO / that Fighter loses by TKO, on the Knockdown Tick, no count |
+
+### P3.4 KO, TKO, and Match End (Req 24, D19)
+
+#### P3.4.1 Outcome rules
+
+```ts
+type Outcome = { kind: 'win'; winner: FighterId } | { kind: 'draw' };
+
+function tkoOutcome(s, fell): Outcome | null {             // step 8, Req 24 c2, D19
+  const third = fell.filter(i => s.fighters[i].roundKnockdowns === 3);
+  if (third.length === 2) return { kind: 'draw' };
+  if (third.length === 1) return { kind: 'win', winner: idOf(1 - third[0]) };
+  return null;
+}
+function koOutcome(k: KnockdownState): Outcome {           // step 9 (c), count === 10, Req 24 c1, D19
+  if (k.down[0] && k.down[1]) return { kind: 'draw' };
+  return { kind: 'win', winner: k.down[0] ? 'ai' : 'player' };
+}
+```
+
+`roundKnockdowns` never exceeds 3, because the third Knockdown ends the Match on its Tick. A KO needs at least one Fighter still down at count 10, which step 9 (c) checks only while `phase === 'knockdown'`, so the KO and the rise rule cannot both apply to one Fighter.
+
+#### P3.4.2 `endMatch` and the match-end event
+
+```ts
+function endMatch(s, o: Outcome, method: MatchMethod, g, cfg, ev) {
+  const r = s.round!;
+  if (method !== 'Decision') scoreRound(s, cfg);           // Req 26 c11 (P3.6.2)
+  s.result = { kind: o.kind, winner: o.kind === 'win' ? o.winner : null, method,
+               round: r.number, roundTime: cfg.match!.rounds.duration - r.timer,   // Req 24 c5
+               totals: method === 'Decision' ? decisionTotals(s) : null, at: g };
+  r.phase = 'ended';                                       // knockdown stays non-null after a KO
+  ev.global({ type: 'match-end', at: g, result: s.result });
+}
+```
+
+- **One event (Req 24 c5).** `endMatch` is reachable only from step 9 while the phase is not `'ended'`, and the gate skips step 9 afterwards, so exactly one `match-end` event exists per Match. Its `roundTime` counts only Ticks the round timer ran (P3.2.2).
+- **No further rounds (Req 25 c7).** A KO or TKO in round 1 or 2 returns from `roundStep` before (e)–(g).
+- **Final poses.** On a KO the risen or standing Fighter is Idle and the loser is KnockedDown. On a TKO the standing Fighter is Idle through the D21 freeze, which also applies to a third Knockdown. On a decision both are Idle (Req 25 c4).
+
+#### P3.4.3 Ended phase (Req 24 c6)
+
+While `prev.round.phase === 'ended'` the gate of P3.2.1 runs:
+
+| Part of `stepInto` | In `'ended'` |
+|---|---|
+| `tick`, `gameplayTick` | Advance by 1 (keeps Property 11's counter clause) |
+| Step 2a AI, 2b intake | Skipped; masks 0; PRNG and AI memory unchanged |
+| Steps 3–9 | Skipped: no FSM change, no regeneration, no movement, no hits, timer frozen |
+| Step 10 | Records the Player_Observation; emits no events |
+
+Health, Stamina, Guard, positions, FSM states, `score`, and `result` are therefore unchanged on every later Tick. In practice the shell stops calling `tick()` when it sees `match-end` (P3.8.4); the gate keeps direct `step()` callers and tests safe.
+
+### P3.5 Rounds (Req 25, D22, D35)
+
+#### P3.5.1 Round timeline
+
+For a round whose `startAt = a` (Gameplay_Tick), with `duration = Dur` and `interval = I`:
+
+| Gameplay_Ticks | Phase | Commands | Timer | Event |
+|---|---|---|---|---|
+| a (round 2–3: step 9 of the interval's last Tick) | set to `'announce'` | – | `Dur` | – |
+| a+1 … a+120 | `'announce'` | discarded | held | `round-start` on a+120 (Req 25 c3) |
+| a+121 … (`acceptFromAt` onward) | `'fighting'` (and `'knockdown'` during counts) | accepted while `prev` phase is `'fighting'` | −1 on each Tick with `timerRuns` | `knockdown`, `knockdown-count` |
+| E (timer reaches 0, no count running) | `'between'` or `'ended'` | discarded | 0 | `round-end` (Req 25 c4); round 3 also `match-end` (Req 25 c6) |
+| E+1 … E+I | `'between'` | discarded | 0 | – |
+| E+I | next round starts in step 9 (f) | – | `Dur` | – |
+
+Round 1 uses `a = 0` (the initial state, P3.1.6). With `I = 0` the next round starts on Tick E itself, because (f) follows (e) in `roundStep`. The announcement is a constant 120 Ticks (Req 25 c2); the HUD shows "ROUND n" while the phase is `'announce'` (Req 27 c5).
+
+#### P3.5.2 `endRound` and `startNextRound`
+
+```ts
+function endRound(s, g, cfg, ev) {                         // step 9 (e), Req 25 c4
+  for (const f of s.fighters) { transition(f, 'Idle', 'round-end', g); f.inputBuffer = null; }  // cancels attacks
+  scoreRound(s, cfg);                                      // Req 26 c7-c10 (P3.6.2)
+  ev.global({ type: 'round-end', at: g, round: s.round!.number });
+  if (s.round!.number === 3) return endMatch(s, decisionOutcome(s), 'Decision', g, cfg, ev);  // Req 25 c6
+  s.round!.phase = 'between'; s.round!.betweenUntil = g + cfg.match!.rounds.interval;         // Req 25 c5
+}
+
+function startNextRound(s, g, cfg) {                       // step 9 (f), Req 25 c5, c9-c12, D35
+  const M = cfg.match!, P = cfg.p2!;
+  for (const f of s.fighters) {                            // between-round recovery first (Req 25 c5)
+    f.stamina = P.stamina.max; f.guard = P.guard.max;
+    f.health = Math.min(cfg.maxHealth, f.health + M.rounds.betweenRecovery);
+  }
+  resetForRoundStart(s, g, cfg);                           // table below
+  const r = s.round!;
+  r.number += 1; r.phase = 'announce'; r.timer = M.rounds.duration;
+  r.startAt = g; r.announceUntil = g + 120; r.acceptFromAt = g + 121; r.betweenUntil = null;
+}
+```
+
+`transition(f, 'Idle', 'round-end', g)` is a no-op for an Idle Fighter (P3.1.2). `resetForRoundStart` is the same function `createInitialState` uses for round 1, so every round starts from one definition.
+
+**Round-start reset list (`resetForRoundStart`):**
+
+| Field | Value at round start | Req / D |
+|---|---|---|
+| `x`, `facing` | Configured start positions; facing from positions | 25 c2 |
+| `teleportedAt` | `g` for both (renderer snaps, P3.3.3) | 23 c9 |
+| FSM | Idle (already Idle after `endRound`); this also removes HitStun, Block_Stun, GuardBroken, and Slipping timers | 25 c2, c9 |
+| `comboCounter`, `inputBuffer`, `postSlip`, `pendingGuardRecovery` | 0, `null`, `null`, `false` | 25 c9, D17, D35 |
+| `lastBlockedAt` | `null` (no recent blocked hit, so Guard regeneration is not delayed) | 25 c9 |
+| `lastAttackStartAt`, `lastJabStartAt` | `null` (AI interval reference falls back to `acceptFromAt`, P3.5.3) | 25 c11 |
+| `roundKnockdowns` | 0 | 24 c4 |
+| `hitStopRemaining` | 0 [P4] | 25 c9 |
+| `aiMemory.heldBlockFor` | `null` (transient combat state, D35; P3-Q9) | D35 |
+| `knockdown` | `null` (already null; a round never ends during a count) | D35 |
+| History | `count = 0`, `head = 0`; `historyStartAt = g`. Step 10 of the same Tick records the round-start observation as the only entry | 25 c10, D32 |
+| Kept | `health` (after recovery), `stamina`, `guard`, `matchKnockdowns`, `score`, `rng` | 25 c12, D35 |
+
+#### P3.5.3 AI attack interval reference (Req 25 c11)
+
+`decideAiP2` (P2.10.3) uses `ref = me.lastAttackStartAt ?? s.round.acceptFromAt` in `'match'` instead of `?? s.matchStartAt`. Because the round start clears `lastAttackStartAt`, the interval of each round is measured from its first command-accepting Tick, and since step 2a runs only while `prev.round.phase === 'fighting'` (P3.2.1), the AI issues nothing earlier. All other AI triggers use `historyStartAt` (P3.1.6), so a reaction to an observation from the previous round is impossible.
+
+#### P3.5.4 Configuration refusal (Req 25 c8, D22)
+
+`p3Schema.ts` rejects `rounds.duration` outside 1,800–10,800, `rounds.interval` outside 0–3,600, non-integers, and `betweenRecovery` outside 0 to `maxHealth` (P3.1.7). Errors are collected and name the setting; `createMatch` returns `{ ok: false, errors }` and no state is produced. Nothing is defaulted silently.
+
+### P3.6 Scoring (Req 26, D23)
+
+#### P3.6.1 Statistic hooks
+
+All hooks write `s.score.rounds[round.number − 1].stats[i]` and run only in `'match'`. Statistics are integers from 0 (Req 26 c1).
+
+| Statistic | Hook (step) | Rule | Req |
+|---|---|---|---|
+| `thrown` | `startAttack`, `cancelInto` (4) | +1 to the attacker on every entry into Startup_Phase: new, buffered, cancel follow-up, AI or player | 26 c2 |
+| `landed`, `damage` | `applyLanded` (7) | +1; `damage += healthBefore − healthAfter` (Health actually removed, so overkill is not counted) | 26 c3 |
+| `blocked` | `applyBlocked` (7) | +1 to the attacker. Chip damage is not added to `damage` (literal c3, "hit lands"; P3-Q10) | 26 c4 |
+| `counters` | Counterpunch branch of `applyLanded` (7) | +1 to the attacker, once per Counterpunch | 26 c5 |
+| `knockdownsScored` | `knockdownEntry` (8) | +1 to the opponent of each fallen Fighter; both score 1 in a double knockdown | 26 c6 |
+
+A Trade adds `landed` and `damage` for both attackers from the shared snapshot (D4), so the hooks need no order rule.
+
+#### P3.6.2 Round points
+
+```ts
+function scoreRound(s, cfg) {                              // round end (Req 26 c7-c10) or KO/TKO (c11)
+  const rs = s.score!.rounds[s.round!.number - 1], w = cfg.match!.scoring.weights;
+  const perf = rs.stats.map(t => t.landed * w.landed + t.damage * w.damage + t.counters * w.counter);  // c7
+  const base = perf[0] > perf[1] ? [10, 9] : perf[0] < perf[1] ? [9, 10] : [10, 10];               // c8, c9
+  rs.points = [0, 1].map(i => Math.max(6, base[i] - s.fighters[i].roundKnockdowns)) as [number, number];  // c10
+}
+function decisionTotals(s): [number, number] {             // Req 26 c12
+  const t = [0, 0];
+  for (const r of s.score!.rounds) { t[0] += r.points![0]; t[1] += r.points![1]; }
+  return t as [number, number];
+}
+function decisionOutcome(s): Outcome {
+  const [p, a] = decisionTotals(s);
+  return p === a ? { kind: 'draw' } : { kind: 'win', winner: p > a ? 'player' : 'ai' };
+}
+```
+
+- **Integer exactness (D23).** Every factor is a non-negative integer. Weights are at most 10^6 (P3.1.7); landed punches per round are below 10,800 and damage per round is at most `3 × maxHealth ≤ 3,000` (starting Health plus two rises), so each performance value stays far below 2^53 and comparisons are exact.
+- **Range 6–10 (c13).** Base points are 9 or 10, and `roundKnockdowns ≤ 3`, so `base − kd ≥ 6` even before `max(6, …)`; the clamp is kept as a guard.
+- **KO and TKO round (c11).** `endMatch` scores the current round from the statistics so far, including the Knockdown of that Tick. Later rounds keep `points = null` and are shown as "–" on the Results_Screen.
+- **Decision (c12).** Only reachable after round 3 ends by time, so all three `points` are set when `decisionTotals` runs.
+
+#### P3.6.3 Match totals for the Results_Screen
+
+`matchTotals(score)` in `p3/scoring.ts` (pure, tested in Node) sums each statistic over the rounds that have data and returns per Fighter `{ thrown, landed, counters, knockdownsScored, landingPct }`. `landingPct = thrown === 0 ? 0 : Math.floor((200 * landed + thrown) / (2 * thrown))`, which is `roundHalfUp(landed / thrown × 100)` in integer arithmetic (Req 30 c5).
+
+### P3.7 Seeds, Restart, and Rematch (D8, D24, D25)
+
+#### P3.7.1 MatchSession
+
+```ts
+// src/sim/p3/session.ts — pure; one instance per page session, held by GameRuntime (no module globals)
+export class MatchSession {
+  private started = 0;                                     // Matches started this page session
+  constructor(private readonly raw: RawGameConfig) {}
+  start(difficulty: DifficultyLevel): CreateMatchResult {
+    const seed = (this.raw.seed + this.started) >>> 0;     // D24; wraps modulo 2^32 (P3-Q11)
+    const res = createMatch({ ...this.raw, seed }, { difficulty });
+    if (res.ok) this.started += 1;                         // a refused config is not a started Match
+    return res;
+  }
+}
+```
+
+| UI action | Call | Seed | Req |
+|---|---|---|---|
+| Start Fight (Main_Menu) | `session.start(ui.difficulty)` | `seed + n` | 28 c6, D24 |
+| Restart Match (Pause_Menu) | `session.start(current difficulty)` | `seed + n` | 29 c5, D24 |
+| Rematch (Results_Screen) | `session.start(ended Match's difficulty)` | `seed + n` | 30 c7, D24 |
+| M1 restart (`ruleset: 'm1'` only) | `driver.restart()` (section 10.3) | initial seed | 13 c4–c6, D8 |
+
+`n` is the number of Matches already started, so the first Match uses the configured seed. Each new Match gets a fresh `MatchDriver` with its own compiled config and fingerprint (P3.1.6), and `createInitialState` gives round 1, full timer, maximum resources, start positions, and zeroed statistics (Req 29 c5, Req 30 c7). `driver.restart()` is not reachable from the P3 UI, so D8 applies only to the `'m1'` ruleset. A Match is reproducible from `(raw config, n, difficulty, player commands)`.
+
+#### P3.7.2 Shell work when a Match starts
+
+`GameRuntime.beginMatch(level)`: call `session.start(level)`; on failure show LoadFailedScreen with the errors and leave `ui.difficulty` unchanged (Req 22 c11). On success: replace `driverRef` (new buffers with `prev == curr`, so nothing interpolates from the old Match), `loop.resume(nowMs)` (zeroes the accumulator and the last timestamp), `sampler.reset()` (the same reset the Input_System runs on window `blur`, section 3.3, so held keys must be pressed again, Req 8 c7), reset the `hudLabels` tracker, publish a fresh HUD snapshot, and set `ui = { screen: 'fight', paused: false, difficulty: level }`. The difficulty lives only in `useUiStore`, so it persists for the page session and is lost on reload (D25).
+
+### P3.8 App Shell and Screens (Req 27–30, D25, D26)
+
+#### P3.8.1 Screen state machine in `useUiStore`
+
+```ts
+export type Screen = 'boot' | 'unsupported' | 'load-failed' | 'main-menu' | 'controls' | 'fight' | 'results';
+export interface UiState {
+  screen: Screen;
+  difficulty: DifficultyLevel;      // 'Normal' at load (Req 28 c4); then the latest Match's level (c5, D25)
+  paused: boolean;                  // meaningful only while screen === 'fight'
+  matchEnded: boolean;              // set when match-end is seen; blocks pausing (Req 29 c8)
+  results: ResultsView | null;      // frozen copy shown by the Results_Screen
+}
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> boot
+    boot --> unsupported : no WebGL2
+    boot --> load_failed : load error
+    boot --> main_menu : ok (D26)
+    main_menu --> controls : Controls
+    controls --> main_menu : Back or Escape
+    main_menu --> fight_running : Start Fight (session.start)
+    main_menu --> load_failed : config refused
+    fight_running --> fight_paused : Escape, P, blur, hidden
+    fight_paused --> fight_running : Resume, Escape, P
+    fight_paused --> fight_running : Restart Match (new Match)
+    fight_paused --> main_menu : Quit to Main Menu
+    fight_running --> results : match-end, then 1.5 s hold
+    results --> fight_running : Rematch (new Match)
+    results --> main_menu : Main Menu
+```
+
+`fight_running` and `fight_paused` are `screen === 'fight'` with `paused` false or true.
+
+Only `GameRuntime` actions change `screen`. The Simulation_State holds none of these fields (Req 2 c6). `MatchDriver` exists only while `screen` is `'fight'` or `'results'`.
+
+#### P3.8.2 Main_Menu (Req 28, D25, D26)
+
+- **No Match on load (c1, D26).** BootGate goes to `'main-menu'`. No driver exists, so `SimulationTicker` returns at once and no Ticks advance. The Canvas stays mounted and draws the Ring without Fighters, so a new Match does not recreate the WebGL context. This replaces the M1 auto-start (Req 13 c1) and the temporary P2 difficulty selector (P2-Q17). `ResultOverlay` remains only for `ruleset: 'm1'` builds used in tests.
+- **Items (c2, c3).** Start Fight; a Difficulty_Level selector of three options (Easy, Normal, Hard) with exactly one marked selected (`aria-checked`); Controls.
+- **Focus model (c9–c11).** `menuModel.ts` is a pure reducer shared by all three menus:
+
+```ts
+type MenuAction = 'up' | 'down' | 'tab' | 'shiftTab' | 'left' | 'right' | 'activate'
+                | { hover: number } | { click: number } | { pick: DifficultyLevel };
+function reduceMenu(m: { focus: number; items: readonly MenuItem[]; difficulty?: DifficultyLevel },
+                    a: MenuAction): { next: typeof m; effect: MenuEffect | null };
+```
+
+| Input | Effect |
+|---|---|
+| Up / Down, Tab / Shift+Tab | Move `focus` with wrap-around |
+| Left / Right | Change difficulty only when `focus` is the selector (no wrap) |
+| Enter / Space | Activate the focused item |
+| Mouse hover | `focus = hovered item` |
+| Single left click | Activate the item, or pick the clicked level |
+
+The menu root owns one `keydown` listener and calls `preventDefault()` for arrows, Tab, and Space, so the browser's own focus never disagrees with `focus`. The focused item gets a `ring-2` Tailwind class; exactly one index is focused, so exactly one indicator is visible (c11).
+- **Start Fight (c6).** `beginMatch(ui.difficulty)` (P3.7.2).
+- **Preselection (c4, c5).** `ui.difficulty` starts at Normal; `beginMatch` writes the Match's level, so returning to the menu shows the latest Match's level.
+- **Controls (c7, c8).** The list is generated from `keymap.ts` entries (move left, move right, jab, cross, hook, uppercut, block, slip, each with its keys) plus a row "Pause: Escape, P", so it cannot drift from the real bindings. Back or Escape returns to the items and leaves `difficulty` unchanged.
+
+#### P3.8.3 Pause_Menu (Req 29)
+
+`src/app/pauseController.ts` is a plain module with injected dependencies, so it is unit-testable in jsdom:
+
+```ts
+export function createPauseController(d: { loop: FixedStepLoop; sampler: InputSampler;
+                                           ui: UiStoreApi; now: () => number }) {
+  const active = () => d.ui.get().screen === 'fight' && !d.ui.get().matchEnded;  // c1, c8
+  const pause = () => { d.loop.pause(); d.sampler.reset(); d.ui.set({ paused: true }); };
+  const resume = () => { d.sampler.reset(); d.loop.resume(d.now()); d.ui.set({ paused: false }); };
+  return {
+    onKeyDown(e: { code: string; repeat: boolean }) {        // Escape or KeyP, by code
+      if (e.repeat || (e.code !== 'Escape' && e.code !== 'KeyP') || !active()) return;
+      d.ui.get().paused ? resume() : pause();                // c1, c4
+    },
+    onFocusLost() { if (active() && !d.ui.get().paused) pause(); },   // window blur, visibilitychange hidden (c2)
+    resume, pause,
+  };
+}
+```
+
+| Rule | Mechanism | Req |
+|---|---|---|
+| Stop Ticks within 100 ms | `loop.pause()` runs synchronously in the event handler; the next frame returns 0 Ticks and React shows the menu on that frame | 29 c1 |
+| Any phase until Match end | `active()` checks only `screen` and `matchEnded`, so announcement, interval, and Knockdown_Count Ticks can be paused | 29 c1 |
+| Hidden tab, lost focus | `blur` on `window` and `visibilitychange` with `document.hidden`; nothing resumes on focus return | 29 c2 |
+| Items and focus | Resume, Restart Match, Quit to Main Menu; `reduceMenu` with focus 0 on open; Up/Down plus Enter, or click | 29 c3 |
+| No paused time | `loop.resume(now)` resets the accumulator and last timestamp (section 3.1) | 29 c4, Req 1 c4, c6 |
+| Restart | `beginMatch(ui.difficulty)`, new seed (P3.7), no Results_Screen | 29 c5 |
+| Quit | Drop the driver, `screen = 'main-menu'`, difficulty unchanged | 29 c6 |
+| No commands while paused; re-press after resume | No Ticks run, so `sampleTick()` is never called; `sampler.reset()` on pause and resume discards held keys and latches | 29 c7, Req 8 c7 |
+| Not outside a Match | `active()` is false on menus, Controls, Results_Screen, and after `match-end` | 29 c8 |
+
+Escape and P are not in `keymap.ts`, so they never produce Fighter_Commands. The Pause_Menu's own listener handles only arrows, Enter, and clicks, so Escape and P are handled once.
+
+#### P3.8.4 Results_Screen (Req 30)
+
+- **Stop and show (c1).** `SimulationTicker` stops its per-frame Tick loop right after the Tick whose events include `match-end`, calls `loop.pause()`, sets `matchEnded = true` and `results = buildResultsView(curr)`, and starts a `RESULTS_HOLD_MS = 1500` timer owned by `GameRuntime` (cleared when a new Match starts or the runtime unmounts). The timer sets `screen = 'results'`, 1.5 s after the event, inside the 3 s limit, with the final pose visible meanwhile.
+- **Content (c2–c5).** `buildResultsView` reads only `curr.result` and `curr.score` and calls `matchTotals` (P3.6.3):
+
+| Element | Source | Req |
+|---|---|---|
+| "PLAYER WINS", "AI WINS", or "DRAW" | `result.kind`, `result.winner` | 30 c2 |
+| Method and round | `result.method` (KO, TKO, Decision), `result.round` | 30 c2 |
+| Round points 1–3 and totals (Decision only) | `score.rounds[i].points`, `result.totals` | 30 c3 |
+| Per Fighter: thrown, landed, Counterpunches landed, Knockdowns scored, landing % | `matchTotals(score)` | 30 c4, c5 |
+
+- **Actions (c6–c8).** Rematch and Main Menu through `reduceMenu` (keyboard and mouse). Rematch calls `beginMatch(ui.difficulty)`, which is the ended Match's level. Main Menu sets `screen = 'main-menu'` with that level selected.
+
+#### P3.8.5 Fight_HUD additions (Req 27, Req 23 c16, Req 34 c7)
+
+| HUD element | Snapshot field (from `curr`) | Req |
+|---|---|---|
+| Left half: "PLAYER", HealthBar, StaminaBar, GuardBar; right half: "AI", mirrored | `health`, `stamina`, `guard` pairs and their maxima | 27 c1 |
+| Bar fill | `width: ${100 * v / max}%`, exact, so within 1% | 27 c2 |
+| RoundClock: "ROUND n" and seconds | `round.number`, `Math.ceil(round.timer / 60)` | 27 c3 |
+| Paused time | Unchanged `timer` gives an unchanged number | 27 c4 |
+| Announcement "ROUND n" | `round.phase === 'announce'` | 27 c5 |
+| Knockdown_Count (1–10), center | `knockdown?.count ?? null` | 23 c16 |
+| Combo count, "COUNTER", "GUARD BREAK" per side | `labels` from `hudLabels.ts` | 27 c6–c9 |
+
+All of it is a Tailwind DOM overlay (`absolute inset-0 pointer-events-none`) above the Canvas (c10).
+
+**Label tracker (`hudLabels.ts`, pure).** Label timing comes from the Gameplay_Tick of the Game_Event, not from wall-clock time:
+
+```ts
+interface SideLabels { combo: { count: number; at: GTick } | null; counter: GTick | null; guardBreak: GTick | null }
+export function updateLabels(l: [SideLabels, SideLabels], events: readonly GameEvent[], g: GTick)
+  : [SideLabels, SideLabels] {
+  // Apply in event order: combo with count >= 2 -> side(attacker).combo = { count, at } (replaces, restarts 60);
+  // counterpunch -> side(attacker).counter = at; guard-break -> side(fighter).guardBreak = at (broken Fighter).
+  // Then drop every label with g - at >= 60, so a label is visible on Ticks at ... at + 59 (c6-c8).
+}
+```
+
+Each side has three fixed rows (combo, COUNTER, GUARD BREAK), so labels that appear on the same Tick never overlap (c9). Labels do not expire while paused, because no Gameplay_Ticks advance. A new Match resets the tracker.
+
+**One store update per frame (Req 34 c7).** After a frame's Ticks the ticker concatenates the frame's events, calls `updateLabels` once with `curr.gameplayTick`, builds the snapshot with the pure `buildHudSnapshot(curr, labels)`, and calls `useHudStore.setState` once, only if `hudEqual` (field-wise compare) reports a change. Every change is therefore visible by the next displayed frame (Req 27 c2, Req 23 c16).
+
+### P3.9 P3 Deterministic Testing
+
+Simulation tests run in the Vitest `sim` project (Node); menu, HUD, pause, and results tests run in the `ui` project (jsdom). Scripted fights use `ai.enabled = false` (D40). Tooling, tags, and seed reporting follow section 13.1.
+
+#### P3.9.1 Unit tests
+
+| Mechanic | Example and edge-case tests |
+|---|---|
+| Knockdown entry (Req 23 c1, c23, D20, D21) | Landed hit to 0 → KnockedDown, totals +1, `knockdown` event with round and `roundTime`; chip to 0 while Blocking → KnockedDown; Health 0 during a HitStun-causing hit → KnockedDown (D6); combo counters and both buffers cleared; standing Attacking and standing HitStun (Trade) → Idle |
+| Repositioning (c3–c10, D31) | One case per branch: preferred side fits; only the opposite side fits (side swap, facing flipped); neither fits with unequal ends (farther end); neither fits with equal ends (preferred end); `K` exactly at the boundary (inclusive); config refusal for `K < minSeparation` and width `< 2 × minSeparation` |
+| Snap flag (c9) | `FighterView` x equals `curr.x` on the frame where `teleportedAt` changed and equals the lerp on the next frame; same for a round start |
+| Rise count (c11, D27) | Known PRNG words give the expected count; clamp at 2 and at 10; `riseVariance = 0` still draws once; double knockdown draws player then AI |
+| Count and rise (c2, c12–c15, c18–c22, D34) | Rise on `startAt + 60(r − 1)` for r = 2 and r = 9; `knockdown-count` events 2…10, none for 1; Health formula with penalty to below 1 (→ 1) and above 1 (→ max); Guard 0 → recovery, Guard 300 kept; Stamina kept; `pendingGuardRecovery` and `postSlip` cleared; commands on the rise Tick discarded, accepted on the next |
+| KO and TKO (Req 24, D19) | KO at count 10 (540 Ticks); TKO on the third Knockdown with no count; double KO draw; double knockdown with one rise (other loses); third Knockdown for both (TKO draw) and for one; `match-end` once with method, round, `roundTime` |
+| Ended phase (Req 24 c6) | 600 Ticks after `match-end` with random masks: Health, Stamina, Guard, timer, FSM, score unchanged; no events |
+| Rounds (Req 25) | Announcement 120 Ticks with commands discarded; `round-start` on its last Tick; first command and first timer decrement on `acceptFromAt`; round end at timer 0 after that Tick's hits; interval 0 and 3,600; recovery clamps at max; every reset-list field of P3.5.2; history has one entry after round start; AI first regular attack exactly `attackInterval` after `acceptFromAt` |
+| Req 35 c11 | Knockdown on the Tick the timer reaches 0: rise → round ends on the rise Tick; no rise → KO; third Knockdown → TKO, no `round-end` |
+| Config (Req 25 c8, Req 23 c10, D22) | Each P3.1.7 field just below and above its range and non-integer; `'match'` with `combat: 'm1'`; several errors reported together; no state produced |
+| Scoring (Req 26) | Each hook once per event; overkill counts only the Health removed; chip not in `damage` (P3-Q10); 10-9, 9-10, 10-10; deductions 1–3; KO round scored, later rounds `null`; decision win, loss, draw; `landingPct` for 0 thrown, 1/3 → 33, 1/2 → 50, 2/3 → 67 |
+| Seeds (D24, D8) | Three `session.start` calls use seed, seed+1, seed+2; seed 4,294,967,295 wraps to 0; a refused config does not advance `n`; `'m1'` `restart()` reuses the seed |
+
+#### P3.9.2 Scenario tests
+
+Scripted fights in `src/sim/p3/scenarios.test.ts` assert the full event list and selected fields per Tick: (1) a knockdown and rise in round 1, then a round end by time and the interval; (2) three Knockdowns in one round (TKO); (3) a KO with `riseBase = 10`; (4) a double knockdown from a Trade of two finishing jabs, one Fighter rising; (5) a full three-round decision with known statistics and points; (6) the Req 35 c11 case of P3.9.1. One AI-enabled run per Difficulty_Level plays a full Match against a scripted player and stores a golden hash of the final state and event list.
+
+#### P3.9.3 Property tests
+
+New P3 properties are Properties 49–64 in the Correctness Properties section, each with at least 100 runs. Match-length properties use configs with `rounds.duration = 1800`, `interval` 0–300, and low `maxHealth`, so a run of up to 10,800 Ticks covers several rounds, Knockdowns, and Match ends.
+
+| Part 1–2 property | In `'match'` |
+|---|---|
+| 1–4, 21, 25 (determinism, round trip, restore, invalid states, fingerprint) | Same statements over `'match'` configs; states include `round`, `knockdown`, `score`, `historyStartAt`; Property 4 adds the P3.1.6 parse checks. Property 21 (restart identity) runs only in `'m1'`; Property 59 covers P3 |
+| 8 (FSM table) | Checks `M1 ++ P2 ++ P3` rows without the Defeated rows |
+| 11 (invariants) | Same, plus `roundKnockdowns ≤ 3`; separation also holds on Knockdown Ticks (Property 49) |
+| 16 (defeat) | Not applicable; replaced by Properties 51 and 54 |
+| 17 (event order) | Same, with P3 ownership (P3.1.5) |
+| 20 (history) | Valid entries are consecutive from `max(historyStartAt, G − 120)` |
+| 31, 46 (commands while unable to act, AI model) | Restricted to Ticks whose `prev` phase is `'fighting'`; Property 53 covers the rest; Property 46's interval reference is `acceptFromAt` |
+
+#### P3.9.4 UI tests (jsdom)
+
+- `menuModel` and the three menus: initial focus, Normal preselected on load and the last level on return, Controls list equals `keymap.ts` plus the pause row, Escape in Controls, click and hover behavior (Req 28 c2–c11, Req 29 c3, Req 30 c6).
+- `pauseController` with a fake loop, sampler, and store: Escape and P toggle; `repeat` ignored; blur and `visibilitychange` pause but never resume; no pause on menus or after `match-end`; `loop.pause` and `sampler.reset` called on pause, `sampler.reset` and `loop.resume(now)` on resume (Req 29 c1, c2, c4, c7, c8).
+- Results_Screen rendering for each method, a draw, and a decision table; Rematch and Main Menu effects (Req 30 c2–c8).
+- HUD: clock shows 90 at the default start and 0 only at timer 0; bars; announcement; Knockdown_Count; labels for 60 Ticks, replacement, and same-Tick COUNTER plus GUARD BREAK in separate rows; one `setState` per frame with five Ticks of events (Req 27, Req 23 c16, Req 34 c7).
+
+#### P3.9.5 Browser test (Playwright)
+
+| Test | Method | Req |
+|---|---|---|
+| Menu boot | Load the build; Main_Menu visible, Normal selected, no HUD, no Tick advance (e2e hook reads `tick` twice) | 28 c1, c4, D26 |
+| Full Match by KO | `--mode e2e` config (low `maxHealth`, `riseBase = 10`); Start Fight on Hard; scripted key presses until `match-end`; Results_Screen within 3 s; Rematch starts round 1 | 24 c1, 30 c1, c7 |
+| Full Match by decision | e2e config with `rounds.duration = 1800`, `interval = 0`, high `maxHealth`, `ai.enabled = false`; the player lands jabs in round 1 only, then idles (about 96 s); Results_Screen shows Decision, 10-9, 10-10, 10-10, player wins 30–29, matching the e2e hook's `score` | 25, 26 c12, 30 c3 |
+| Pause | Escape mid-round; `tick` constant for 2 s; Resume; switching tabs pauses and stays paused | 29 c1, c2, c4 |
+| No errors | Both full-Match tests in Chrome, Firefox, and Edge with no `pageerror` events | 14 c6 |
+
+---
+
+## Part 4: Presentation and Polish (P4)
+
+Part 4 adds Hit_Stop, the Animation_System, the Effects_System, the Audio_System, and the performance work (Req 31–34). As in Parts 2 and 3, nothing is redesigned. Hit_Stop is a change to step 1 of the pipeline (section 5.1), which section 4 prepared from M1 by keeping `tick`, `gameplayTick`, and `hitStopRemaining` apart. Everything else is presentation: it reads `driver.view()` (`prev`, `curr`, `alpha`, section 11.2) and the frame's event list, and never writes either (Req 31 c9, Req 32 c12). No gameplay rule changes; conflicts are listed in section 17.
+
+New files. `src/sim`: `p4/hitStop.ts` (step 1 frozen path, `landedHitStop`). `src/render`: `anim/clipMap.ts`, `anim/animClock.ts`, `anim/blend.ts` (pure), `anim/FighterModel.tsx`, `effects/effectsPool.ts`, `effects/shake.ts` (pure), `effects/EffectsLayer.tsx`. `src/audio` (new module, D30): `soundMap.ts`, `volume.ts`, `audioDirector.ts` (pure), `webAudioBackend.ts`, `assets.ts`. `src/app/presentationConfig.ts` (zod schema for the presentation settings).
+
+Import rule additions to section 1.4: `audio → sim (types only)`; `app → audio`. `src/audio` must not import `src/render`, `src/ui`, or `src/sim` runtime code. The `src/sim` ban on `AudioContext` (section 1.4) already keeps Web Audio out of the simulation (Req 2 c1).
+
+### P4.1 Hit_Stop in the Simulation (Req 32 c2–c6, D29, D36)
+
+#### P4.1.1 Setting the counter
+
+Each Attack_Definition has `hitStop`, an integer 0–30 with default 0 (Req 5 c1, section 2.5). `p2Schema.ts` checks it with the other Tick fields and rejects the Attack_Definition per Req 5 c5 when it is out of range or not an integer. The default is filled before fingerprinting, so an absent value and 0 give the same fingerprint (D42). Default values (tuning, `defaults.ts`): jab 3, cross 4, hook 6, uppercut 8.
+
+At the end of `combatStepP2` phase B (P2.9.1), after all outcomes are applied:
+
+```ts
+// src/sim/p4/hitStop.ts
+export function landedHitStop(plans: readonly { h: PendingHit; outcome: 'evade' | 'block' | 'landed' }[]): number {
+  let H = 0;
+  for (const p of plans) if (p.outcome === 'landed') H = Math.max(H, p.h.atk.hitStop);
+  return H;                                         // blocked and slip-evaded contacts add nothing (Req 32 c6, D29)
+}
+// combatStepP2, after phase B:  next.hitStopRemaining = landedHitStop(plans);
+// 'm1' combat (section 8.3): every PendingHit is landed, so H = max over hits of h.atk.hitStop.
+```
+
+| Contact on Gameplay_Tick T | `hitStopRemaining` after T | Frozen Ticks | Req |
+|---|---|---|---|
+| One landed hit with value H | H | T+1 … T+H | 32 c2 |
+| Trade with values H1, H2 | `max(H1, H2)` | T+1 … T+max | 32 c2, D29 |
+| Landed hit plus a blocked or evaded contact | H of the landed hit | T+1 … T+H | D29 |
+| Blocked (including a chip Knockdown, D20) or slip-evaded only | 0 | none | 32 c6 |
+| Counterpunch or zero hit-stun hit (D41) | the attack's H, no multiplier | T+1 … T+H | D29 (landed hit) |
+
+Steps 8–10 still run on T, so the hit, any Knockdown or Defeated entry, round logic, all Game_Events, and the Player_Observation of T are complete before the first frozen Tick (D36, Req 32 c2). Step 7 is the only writer of a non-zero value, and it always starts from 0, because a Gameplay_Tick is only reached with `hitStopRemaining === 0`. Round start sets it to 0 (Req 25 c9, P3.5.2); that write never matters in practice, because combat and round start never happen on the same Tick.
+
+#### P4.1.2 Step 1 frozen-Tick path
+
+Step 1 replaces the M1 one-liner of section 5.1. It runs before the P3 ended-phase gate (P3.2.1), so the freeze also applies after a Match-ending hit.
+
+```ts
+// (1) Hit_Stop check (Req 32 c3, c5; D36)
+if (next.hitStopRemaining > 0) {
+  next.hitStopRemaining -= 1;                       // the only counter that moves; measured in Ticks (section 4)
+  frozenIntake(prev, next, input, cfg);             // command intake per Req 20
+  return ev.flush();                                // always empty: frozen Ticks emit no Game_Events
+}
+next.gameplayTick += 1;                             // only on non-frozen Ticks
+...
+
+function frozenIntake(prev, next, input, cfg) {
+  if (cfg.p2 === null) return;                      // 'm1': no Input_Buffer, attacks are discarded (Req 4 c11)
+  const mask = intakeMasks(prev, next, input, cfg); // step 2b validation and gates, with AI mask 0 (no AI call)
+  const g = next.gameplayTick;                      // unchanged, so buffer age is frozen (Req 32 c5)
+  for (const i of [0, 1]) {
+    const f = next.fighters[i];
+    const atk = topAttack(mask[i]);                 // D9; lower attacks discarded (Req 35 c3)
+    if (atk !== null && bufferable(f, g)) f.inputBuffer = { attackId: atk, receivedAt: g };  // Req 20 c1
+  }                                                 // everything else is discarded (Req 20 c4)
+}
+```
+
+`intakeMasks` is the step 2b code of sections 5.1, P2.2, and P3.2.1 moved into a function, so validation, `cfg.enabledMask`, the Defeated and result zeroing, and the `'fighting'`-phase gate are identical on frozen Ticks. After a Knockdown on T, the phase is `'knockdown'`, so frozen-Tick masks are 0 (D21).
+
+| Work on a frozen Tick | Done? | Req |
+|---|---|---|
+| `tick += 1`, `hitStopRemaining −= 1` | Yes | 32 c3; section 4 |
+| Command intake: validation, gates, attack into the Input_Buffer in a bufferable state (D12) | Yes | 32 c3, c5; 20 c1, c4 |
+| `gameplayTick += 1` | No | 32 c3, D36 |
+| AI_Controller decision, PRNG or AI memory commit | No | 32 c3; D40 |
+| Timers: attack phase, HitStun, Block_Stun, Slipping, GuardBroken, Input_Buffer age, `postSlip`, Knockdown_Count, round timer | No (step 3 and step 9 skipped; all are absolute Gameplay_Ticks) | 32 c3; 25 c1 |
+| Action selection, Stamina, regeneration, movement, facing, hit detection, Health-zero checks | No | 32 c3 |
+| Player_Observation_History entry | No | 32 c3; 12 c9; D32 |
+| Game_Events | None | 32 c3 |
+
+Why the buffer works with no extra field. A command received on a frozen Tick gets `receivedAt = g`, the hit Tick's Gameplay_Tick. Step 3 discards it when `g' − receivedAt ≥ 6`, so it can start on Gameplay_Ticks g+1 … g+5. That is the same window as a command received on a Gameplay_Tick (Req 20 c1–c3, P2.3.3 notes), and its age does not grow during the freeze (Req 32 c5). A newer frozen-Tick attack replaces the held one (Req 20 c1). No Cancel_Window can be open on a frozen Tick: hits land only in the attacker's Active_Phase, the phase does not advance during the freeze, and a struck Fighter is in HitStun or Idle. So `bufferable` alone decides, which matches step 4.
+
+`MatchDriver` is unchanged. It samples the Input_System once per Tick, frozen or not, so edge-latched presses are consumed on frozen Ticks: an attack press is buffered or discarded per the table, and a slip press is discarded (section 17, P4-Q2).
+
+#### P4.1.3 State, serialization, and the timestamp rule
+
+- No new state fields. `hitStopRemaining` exists from M1 (section 2.4). The state stays `version: 3`.
+- New parse checks in `parseSimulationState`: `hitStopRemaining` an integer in `0 … max hitStop of the registry`; `gameplayTick ≤ tick`.
+- Every gameplay timestamp is a `GTick` (section 4), so a freeze delays every later event by exactly the number of frozen Ticks in Ticks, and changes no `at` value. Property 67 checks this "timestamp shift" rule against a run with all `hitStop` values 0, which is the property section 4 promised.
+
+### P4.2 Animation_System (Req 31, Req 6 c3, c9, D28)
+
+#### P4.2.1 Clip mapping (Req 31 c1)
+
+`clipMap.ts` is pure data plus one lookup, `clipFor(fsm, facing): ClipKey`.
+
+| Fighter_FSM state | Clip | Playback | Clock source |
+|---|---|---|---|
+| Idle | `idle` | Loop | `gt` |
+| Walking | `walk` | Loop; played backward when `dir ≠ facing` (retreat) | `gt` |
+| Attacking | `punch_jab`, `punch_cross`, `punch_hook`, `punch_uppercut` by `attackId` | Phase-synced, one shot (P4.2.2) | `gt − enteredAt` |
+| Blocking | `block` | Loop (hold pose) | `gt` |
+| Slipping | `slip` | One shot stretched to `until − enteredAt` | `gt − enteredAt` |
+| HitStun | `hit_react` | One shot stretched to `until − enteredAt` | `gt − enteredAt` |
+| GuardBroken | `guard_broken` | One shot stretched to `until − enteredAt` | `gt − enteredAt` |
+| KnockedDown | `knockdown` | One shot, then hold the last frame | `gt − enteredAt` |
+| Defeated | `defeated` | One shot, then hold the last frame | `gt − enteredAt` |
+
+The clip key is `kind`, plus `attackId` and `enteredAt` for Attacking (so a cancel into a new attack is a new key) and the walk sign for Walking. Each key change is a state change for blending (P4.2.3).
+
+#### P4.2.2 Animation clock and phase sync (Req 31 c2, c7, c8)
+
+All animation time is gameplay time, read from the state, never from wall-clock deltas:
+
+```ts
+// animClock.ts (pure)
+gt = prev.gameplayTick + alpha * (curr.gameplayTick - prev.gameplayTick);   // fractional Gameplay_Tick
+
+// Punch segment from curr (Attacking, attack a, entry e; S, A, R from the CompiledAttack)
+const seg = curr.fsm.phase;                                   // 'startup' | 'active' | 'recovery'
+const [s0, len] = seg === 'startup' ? [e, S] : seg === 'active' ? [e + S, A] : [e + S + A, R];
+const u = clamp((gt - s0) / len, 0, 1);                       // progress inside the segment
+clipTime = meta[a][seg].start + u * meta[a][seg].duration;    // segment boundaries from clip metadata
+```
+
+- **Segment within 1 Tick (c2).** The segment comes from `curr.fsm.phase`, so the displayed segment changes on the first frame whose `curr` is the first Tick of the new phase. That frame shows `gt` in `[b − 1, b]` for boundary Tick b, which is within 1 Tick.
+- **Frame-rate independence (c7).** The pose is a pure function of `(prev, curr, alpha)` and clip metadata. At 30, 60, or 144 fps the same states give the same segment; only the sampled `u` differs, by less than 1 Tick.
+- **Hold during Hit_Stop (c8).** Frozen Ticks leave `gameplayTick` unchanged, so `prev.gameplayTick === curr.gameplayTick` after the first frozen Tick and `gt` stops. Every clip time and blend weight is a function of `gt`, so both Fighters' poses hold, including any blend in progress. The attacker holds its Active_Phase pose and the target its hit pose (P4.2.3). Pause holds the same way, because no Ticks run.
+- **Clip metadata.** `fighter.anim.json` ships next to the GLB and gives each punch clip's `startup`, `active`, and `recovery` segment start and duration in seconds. The clip's authored speed does not matter: the Simulation_State's Ticks decide the timing.
+
+#### P4.2.3 Blending (Req 31 c3–c6, D28)
+
+`blend.ts` keeps one render-side `BlendTrack` per Fighter: `{ key, fromPose, startGt, ticks }`. `fromPose` is a preallocated buffer of bone rotations and translations (or placeholder pose parameters).
+
+```ts
+function onFrame(track, curr, gt, displayedPose, cfg) {
+  const key = clipKeyOf(curr.fsm, curr.facing);
+  if (key !== track.key) {                                    // a state change, also during a blend (c6)
+    copyPose(track.fromPose, displayedPose);                  // blend starts from what is on screen (c3, c5, c6)
+    track.key = key;
+    track.ticks = curr.fsm.kind === 'Attacking' ? 0 : cfg.blendTicks[curr.fsm.kind];   // D28, c4
+    track.startGt = hasEntry(key) ? curr.fsm.enteredAt - 1 : gt;                          // anchored to the change
+  }
+  const w = track.ticks === 0 ? 1 : clamp((gt - track.startGt) / track.ticks, 0, 1);
+  return mixPose(track.fromPose, targetPose(curr, gt), w);    // slerp per bone, no allocation
+}
+```
+
+| Rule | Mechanism | Req |
+|---|---|---|
+| Blend duration 0–6 Ticks; 0 switches at once | `presentation.animation.blendTicks[kind]`, integers 0–6, validated at boot | 31 c3 |
+| Entering Attacking shows the startup pose on the first frame | Attacking always uses 0 Ticks and `u = 0` at `gt ≤ e` | 31 c4, D28 |
+| Leaving Attacking early (hit, cancel, Knockdown) | The key changes, the punch clip stops, and the new state's clip blends in from the displayed pose | 31 c5 |
+| Change during a blend | New `fromPose` is the displayed (already blended) pose; the weight restarts from the newest change, so it completes by `enteredAt − 1 + ticks` | 31 c6 |
+| Hold during Hit_Stop | `gt` is frozen, so `w` is frozen | 31 c8 |
+
+`startGt = enteredAt − 1` makes completion independent of how many Ticks a frame ran: even after a 5-Tick catch-up frame, the blend ends no later than `ticks` after the change. Field-only changes without a new `enteredAt` (a Walking direction flip) start at the current `gt`.
+
+Default `blendTicks` (tuning): Idle 4, Walking 3, Blocking 2, Slipping 2, HitStun 0, GuardBroken 3, KnockedDown 2, Defeated 2. HitStun defaults to 0 so the hit reaction is fully visible during the Hit_Stop hold; a non-zero value would freeze the target near its pre-hit pose for the whole freeze (section 17, P4-Q5).
+
+#### P4.2.4 Models, assets, and fallback (Req 6 c3, c9)
+
+- **One GLB, two instances.** `fighter.glb` holds one skinned mesh and all clips. drei's `useGLTF` loads it inside `<Suspense>`; `SkeletonUtils.clone` makes the second skeleton. Each Fighter clones the trunks and glove materials and sets its fixed color (player red, AI blue, as in section 12.2), so the two Fighters stay distinguishable.
+- **Mixer without real-time deltas.** One `AnimationMixer` per Fighter with one `AnimationAction` per clip, all created at load. Each frame sets the target action's `time` from P4.2.2, weight 1, and calls `mixer.update(0)` to evaluate; `blend.ts` then mixes with `fromPose` using `Quaternion.slerpFlat` on preallocated arrays.
+- **Placeholder fallback.** `<Suspense fallback={<PlaceholderFighter/>}>` and a per-Fighter error boundary around `FighterModel`. A load error, a missing required clip, or missing or invalid clip metadata logs one `console.warn` naming the asset and renders the placeholder for that Fighter for the rest of the page session (Req 6 c9). The game never waits for the model: preload starts at boot (`useGLTF.preload`), and a Match started before it finishes shows placeholders until it arrives (P4-Q10).
+- **Placeholder animation.** The placeholder (section 12.2) uses the same clip keys, clock, and blend with procedural pose parameters (lead-arm extension, torso tilt and lean, group rotation), so every Req 31 c1 state stays distinct without the model.
+- **Read-only (Req 31 c9).** The Animation_System reads `DeepReadonly` views only and writes only Three.js objects and its own `BlendTrack`s. The non-mutation test of section 11.2 and Property 71 cover it.
+
+### P4.3 Effects_System (Req 32 c1, c7–c12)
+
+#### P4.3.1 Event consumption
+
+After a frame's Ticks, `SimulationTicker` (priority −1) hands the frame's concatenated event list, typed `readonly GameEvent[]`, to `effects.consume(events, clockMs)` and `audio.consume(events)`, in that order, after the HUD update of P3.8.5. Visual updates run in the priority-0 callbacks of the same frame, so an effect spawned from a Tick is drawn in that frame, which is the next displayed frame (Req 32 c1). In development builds the list and each event are `Object.freeze`d before consumers see them.
+
+| Game_Event | Effect | Position | Req |
+|---|---|---|---|
+| `hit-landed` | `impact` (additive flash ring) | `hitPos` (x, y), z = Hurtbox front face | 32 c1 |
+| `attack-blocked` | `blockSpark` (separate type, mesh, and material) | `hitPos`, same z rule | 32 c9 |
+| `counterpunch` | Camera shake with `shake.counter` settings | – | 32 c7 |
+| `knockdown` | Camera shake with `shake.knockdown` settings | – | 32 c7 |
+
+Effects use a presentation clock `clockMs` that advances by the frame delta only while the Match runs, so effects and shakes also pause with the Pause_Menu. Hit_Stop does not stop this clock: impacts animate during the freeze while Fighter poses hold.
+
+#### P4.3.2 Pool (Req 32 c10, c11)
+
+```ts
+// effectsPool.ts (pure, allocation-free after create)
+interface Slot { active: boolean; type: 'impact' | 'blockSpark'; x: number; y: number; bornMs: number; seq: number }
+createPool(max)                                   // max = presentation.effects.maxActive, 1–64; Slot[max] allocated once
+spawn(pool, type, x, y, nowMs) {
+  let s = firstInactive(pool) ?? oldestActive(pool);   // oldest = smallest seq (Req 32 c11)
+  Object.assign(s, { active: true, type, x, y, bornMs: nowMs, seq: pool.nextSeq++ });   // field writes, no new object
+}
+expire(pool, nowMs)                               // active = false when nowMs − bornMs ≥ lifetimeMs[type]
+```
+
+- The pool is created when the Match scene first loads and is cleared (not reallocated) by `beginMatch`, so a Match allocates nothing for effects (Req 32 c10).
+- At most `maxActive` slots are ever active across both types; a request at the limit reuses the oldest active slot, whatever its type (c11).
+- Lifetimes `effects.impact.lifetimeMs` and `effects.blockSpark.lifetimeMs` are 100–1,000 ms (c1). A slot is visible while `age < lifetime`, so it is removed on the first frame at or after its lifetime.
+- **Rendering.** `EffectsLayer` has one `InstancedMesh` per type with capacity `maxActive` (2 draw calls in total). Each frame writes instance matrices and a per-instance age attribute for active slots and sets `mesh.count`; scale and opacity are functions of `age / lifetime`.
+
+#### P4.3.3 Camera shake (Req 32 c7, c8)
+
+```ts
+// shake.ts (pure)
+trigger(s, intensity, durationMs, nowMs) {        // intensity 0–0.5 world units, duration 0–1,000 ms
+  s.intensity = isActive(s, nowMs) ? Math.max(s.intensity, intensity) : intensity;  // greater intensity (c8)
+  s.durationMs = durationMs; s.startMs = nowMs;   // restarts with the new duration (c8)
+}
+offsetY(s, nowMs) {                               // deterministic, no PRNG
+  const t = nowMs - s.startMs;
+  return t >= s.durationMs ? 0 : s.intensity * (1 - t / s.durationMs) * Math.sin(2 * Math.PI * 25 * t / 1000);
+}
+```
+
+- `CameraRig` computes the pose of section 12.3 first (the pre-shake pose), then adds `offsetY` to `camera.position.y` and the look-at target y. When the shake ends the offset is exactly 0, so the camera is back on the pre-shake pose (c7).
+- **Vertical only.** A horizontal offset would move the Fighters' midpoint off screen center, against Req 6 c5. A vertical shake keeps c5. The fit of section 12.3 adds the current intensity to the vertical padding `sV`, so Req 6 c6 still holds during a shake (P4-Q4).
+- Several triggers in one frame are applied in event order (D10). A Counterpunch that causes a Knockdown therefore ends with the greater of the two intensities and the duration of whichever event comes later in the list.
+
+#### P4.3.4 Read-only (Req 32 c12)
+
+The Effects_System reads `hitPos` and event types only. It writes its pool, its shake state, and Three.js objects. It has no reference to `MatchDriver` buffers. Property 71 compares runs with effects enabled and disabled.
+
+### P4.4 Audio_System (Req 33, D30)
+
+#### P4.4.1 Structure
+
+| File | Role | Testable in |
+|---|---|---|
+| `soundMap.ts` | Pure `soundFor(event): SoundId \| null` | Node |
+| `volume.ts` | Pure `gains(vol, paused): { master, music, sfx }` | Node |
+| `audioDirector.ts` | Pure state machine: inputs (unlock, frame events, pause, resume, Match start, `match-end`) → backend commands (`play`, `pauseSfx`, `resumeSfx`, `musicStart`, `musicStop`, `setGains`) | Node |
+| `webAudioBackend.ts` | Executes commands on an injected `AudioContextLike` | jsdom with a fake AudioContext |
+| `assets.ts` | Manifest, fetch, decode, one warning per failed asset | jsdom with a fake |
+
+The director is the only place with audio rules, so the Web Audio code stays thin. `GameRuntime` creates the Audio_System once at boot and calls `director.matchStarted()` from `beginMatch`; `pauseController` (P3.8.3) calls `director.paused()` and `director.resumed()` next to `loop.pause()` and `loop.resume()`.
+
+Graph: `source → sfxGain → masterGain → destination` for sound effects, and `<audio loop> → MediaElementSourceNode → musicGain → masterGain` for music. Music streams from a media element so a long track is not held decoded in memory; sound effects are short decoded `AudioBuffer`s.
+
+#### P4.4.2 Event-to-sound map (Req 33 c1–c3)
+
+| Game_Event | Sound | Req |
+|---|---|---|
+| `hit-landed` | `hit_jab`, `hit_cross`, `hit_hook`, or `hit_uppercut` by `attackId`; no generic hit sound | 33 c2 |
+| `attack-blocked` | `block` | 33 c1 |
+| `slip-evaded` | `slip` | 33 c1 |
+| `counterpunch` | `counter` (in addition to that hit's `hit_*` sound; it is a separate event) | 33 c1 |
+| `knockdown` | `knockdown` | 33 c1 |
+| `knockdown-count` | `count` | 33 c3 |
+| `round-start` | `bell_start` | 33 c1 |
+| `round-end` | `bell_end` | 33 c1 |
+| Other events (`combo`, `guard-break`, `match-end`, M1 events) | none | – |
+
+Each mapped event in the frame's list starts one sound, in list order, so several events on one Tick give several sounds (c1). Events from the frame's Ticks are consumed in the same frame, right after the Ticks.
+
+#### P4.4.3 Unlock, volume, pause (Req 33 c4–c8)
+
+- **Unlock (c5).** Browsers start an `AudioContext` created without a user gesture in the `suspended` state ([MDN autoplay guide](https://developer.mozilla.org/en-US/docs/Web/Media/Guides/Autoplay)). The backend creates the context at boot with `latencyHint: 'interactive'` and decodes sound effects while suspended. Capture-phase `keydown` and `pointerdown` listeners on `window` call `ctx.resume()` and `audioEl.play()` on the first gesture, then remove themselves. Before unlock, `consume` drops events without queueing, and nothing is shown to the player. `resume()` takes a few milliseconds, inside the 100 ms limit.
+- **Volumes (c4, D30).** `presentation.audio.volume = { master: 80, music: 60, sfx: 80 }`, integers 0–100, plus `pauseAttenuation: 50`, integer 0–100. No in-game volume menu (D30).
+
+```ts
+// volume.ts (pure)
+gains(v, paused) = {
+  master: v.master / 100,
+  sfx:    v.sfx / 100,                                        // effective sfx = master/100 × sfx/100 (c4)
+  music:  (v.music / 100) * (paused ? (100 - v.pauseAttenuation) / 100 : 1),   // c7
+};                                                            // 0 gives a gain of exactly 0 (silent)
+```
+
+- **Music (c6).** `musicStart` on Match start, after unlock; loops while the Match runs; fades out over 500 ms on `match-end` and on Quit.
+- **Pause (c7).** No Ticks run while paused (P3.8.3), so no new events arrive; the director also ignores `play` while paused. `pauseSfx` records each active voice's offset (`ctx.currentTime − startedAt + startOffset`) and stops it. The music gain ramps to the attenuated value with `setTargetAtTime(…, 0.02)`.
+- **Resume (c8).** `resumeSfx` starts a new `AudioBufferSourceNode` per paused voice at its recorded offset, and the music gain ramps back with the same time constant, which reaches the target well within 100 ms.
+- **Voices.** At most 16 sound-effect voices; a new sound beyond that stops the oldest. Source nodes are one-shot by Web Audio design, so creating one per sound is the expected cost.
+
+#### P4.4.4 Latency and missing assets (Req 33 c1, c3, c9)
+
+- **50 ms budget.** A sound starts with `source.start(0)` in the frame that runs its Tick. The delay is the rest of the frame's simulation work (< 2 ms) plus `ctx.baseLatency` and `ctx.outputLatency`, the output-device delay ([MDN outputLatency](https://developer.mozilla.org/docs/Web/API/AudioContext/outputLatency)). With the `'interactive'` hint this is usually 10–30 ms on desktop. The browser test of P4.6.3 reads both values and fails above 50 ms.
+- **Missing asset (c9).** A failed fetch, a failed decode, or a media element `error` event logs one `console.warn` naming the file. That sound id maps to `null` and `play` becomes a no-op. Gameplay and the other sounds continue, and no message is shown to the player. If the `AudioContext` cannot be created at all, the backend becomes a no-op with one warning.
+
+### P4.5 Performance (Req 34, D11)
+
+#### P4.5.1 Frame-time budget (Req 34 c1, c2)
+
+The targets are a 59 fps average (D11) and 99% of frames ≤ 20 ms with none above 50 ms, on the Reference_Desktop at 60 Hz with full assets. The CPU budget per 16.7 ms frame:
+
+| Work per frame | Budget (mean) | Notes |
+|---|---|---|
+| Simulation, usually 1 Tick (max 5, D1) | ≤ 1 ms per Tick | Req 34 c3; frozen Ticks cost almost nothing |
+| HUD snapshot and at most one `setState` | ≤ 1 ms | P3.8.5, Req 34 c7 |
+| Animation: 2 mixers evaluated with `update(0)`, blend | ≤ 1 ms | About 30 bones per Fighter |
+| Effects and shake | ≤ 0.3 ms | 64 slots at most |
+| Audio consume | ≤ 0.2 ms | |
+| Three.js scene traversal and draw submission | ≤ 4 ms | |
+| GPU at 1920×1080, DPR capped to `[1, 2]` | ≤ 10 ms | One directional shadow map 1024², Fighters only cast; no post-processing |
+
+#### P4.5.2 Draw calls (Req 34 c5)
+
+| Item | P4 draw calls | How |
+|---|---|---|
+| Ring: floor, apron, posts, background | 2 | Static parts merged at load with `BufferGeometryUtils.mergeGeometries` and vertex colors (opaque mesh plus background plane) |
+| Ropes | 1 | `InstancedMesh`, 12 instances (section 12.1) |
+| Front ropes (semi-transparent) | 1 | Separate instanced mesh, transparent material |
+| Fighters | ≤ 6 | ≤ 3 primitives (body, gloves, trunks) per skinned Fighter |
+| Shadow pass | ≤ 6 | Fighters only |
+| Effects | 2 | One `InstancedMesh` per effect type, any number of active effects |
+| **Total** | **≤ 18** | Limit 100 |
+
+The e2e hook that already reads `renderer.info.render.calls` (section 12.5) is asserted with both stylized models, 64 active effects, and a shake.
+
+#### P4.5.3 Allocation-free hot path
+
+- Simulation: the double buffers of section 2.1; frozen Ticks copy and return.
+- Per frame: `useFrame` callbacks use module-level scratch `Vector3`, `Quaternion`, and `Matrix4` objects; no arrays, closures, or object literals are created per frame. The frame's event list is one reused array cleared with `length = 0`.
+- Animation `fromPose` buffers, effect slots, and instance attributes are allocated at load.
+- The only expected per-event allocations are Game_Event objects (a few per hit) and Web Audio source nodes.
+- The benchmark of 13.4 reports heap growth over the measured Ticks with `process.memoryUsage()`, and the 60-second browser trace (P4.6.3) counts major GC pauses.
+
+#### P4.5.4 Tick timing, HUD, and latency (Req 34 c3, c4, c7)
+
+- **Tick benchmark (c3).** `bench/tick.bench.ts` adds a P4 run: `'match'` on Hard with the default `hitStop` values, so frozen Ticks are part of the 3,600 measured Ticks. Thresholds unchanged (mean < 1 ms, max < 4 ms).
+- **HUD (c7).** Unchanged from P3.8.5: one `setState` per displayed frame, only on change. The Animation_System, Effects_System, and Audio_System never call React `setState`.
+- **Input-to-pose latency (c4).** Path: key event → next frame's `sampleTick()` → Tick (step 4 starts the attack) → Animation_System with a 0-Tick blend and `u = 0` (D28) → the same frame renders the startup pose. The pose comes from `curr`, so the one-Tick interpolation lag of section 14.2 applies to position only. The expected delay is 0–16.7 ms waiting for the next frame plus about one vsync to present, so about 17–40 ms. A press can wait one extra frame when that frame runs 0 Ticks (accumulator drift, section 14.2), which stays under 100 ms.
+- **Measurement harness.** In `--mode e2e`, `domKeyboard.ts` records `event.timeStamp` for each attack press, and `FighterModel` records the rAF timestamp of the frame where it first applies that attack's startup pose. Latency is the frame timestamp + one refresh interval − the press timestamp. In Chrome, the [Event Timing API](https://developer.mozilla.org/en-US/docs/Web/API/PerformanceEventTiming) `duration` (press to next paint) is logged next to it as a cross-check.
+
+#### P4.5.5 Load time (Req 34 c6)
+
+| Item | Budget (compressed transfer) | Critical for "ready for input"? |
+|---|---|---|
+| App chunk: React, Zustand, `src/sim`, `src/ui`, menus | ≤ 200 KB gzip | Yes |
+| Three.js and R3F chunk (the Canvas draws the Ring behind the Main_Menu, P3.8.2) | ≤ 250 KB gzip | Yes, loaded in parallel |
+| `fighter.glb` (meshopt-compressed geometry and animation, 1K textures) | ≤ 2 MB | No: placeholders until loaded |
+| Sound effects (Ogg Opus, mono, 12 files) | ≤ 400 KB | No |
+| Music (Ogg Opus, streamed) | ≤ 2 MB | No |
+| Self-hosted font | ≤ 50 KB | Yes (`font-display: swap`) |
+
+- **Code splitting.** `vite.config.ts` uses `build.rollupOptions.output.manualChunks` to split `three` and `@react-three/*` from the app chunk, with `<link rel="modulepreload">` for both. The GLB and audio are fetched after the Main_Menu mounts.
+- **Ready for input.** `GameRuntime` sets `document.body.dataset.ready = 'true'` when the Main_Menu's key and click handlers are attached. At 50 Mbit/s the critical path is about 0.5 MB, under 0.2 s of transfer; parse, compile, and first render take the rest of the 5-second budget.
+
+### P4.6 P4 Testing
+
+Simulation tests run in the Vitest `sim` project (Node). The pure presentation modules (`clipMap`, `animClock`, `blend`, `effectsPool`, `shake`, `soundMap`, `volume`, `audioDirector`) have no DOM or Three.js imports and also run in `sim`. Model, scene, and Web Audio backend tests run in `ui` (jsdom with `@react-three/test-renderer` and a fake `AudioContextLike`). Tags and seed reporting follow section 13.1.
+
+#### P4.6.1 Unit tests
+
+| Area | Example and edge-case tests |
+|---|---|
+| Hit_Stop (Req 32 c2–c6) | Jab with H = 3 landing on T: Ticks T+1…T+3 frozen, `gameplayTick` unchanged on them, T+4 is the next Gameplay_Tick; Trade with 4 and 8 gives 8; blocked and slip-evaded give 0; chip Knockdown (D20) gives 0; Counterpunch and zero hit-stun hits use the attack's H; H = 0 freezes nothing |
+| Frozen intake (Req 32 c5, Req 20) | Attack press on a frozen Tick for a HitStun Fighter is buffered with `receivedAt = g` and starts on the Fighter's first Able_To_Act Gameplay_Tick within g+1…g+5; a later frozen press replaces it; slip, block, and movement bits change nothing; frozen masks are 0 after a Knockdown on T (D21); no AI call (spy on `decideAiP2`) |
+| Frozen timers (Req 32 c3, Req 25 c1) | Round timer, Knockdown_Count, HitStun `until`, Block_Stun, Input_Buffer age, and history `head` unchanged across 30 frozen Ticks; no events |
+| Hit_Stop edges | Match-ending hit with H > 0: frozen Ticks run before the ended-phase gate; round start sets `hitStopRemaining = 0`; config `hitStop` −1, 31, 2.5 rejected naming the attack (Req 5 c5); parse rejects `hitStopRemaining` above the registry maximum or `gameplayTick > tick` |
+| Clip map (Req 31 c1) | Each FSM state and each punch gives a distinct clip key for both Fighters; a cancel gives a new key; retreat plays `walk` backward |
+| Phase sync (Req 31 c2, c4, c7) | Startup pose (`u = 0`) on the frame whose `curr` is the entry Tick, for alpha 0 and 0.99; segment switches on the frame whose `curr` is the boundary Tick; 30, 60, and 144 fps frame schedules give the same segment per state |
+| Blend (Req 31 c3, c5, c6, c8) | `blendTicks` 0 and 6; leaving Attacking during Startup_Phase; a second change at mid-blend restarts from the displayed pose and completes by `enteredAt − 1 + ticks`; pose constant while `prev.gameplayTick === curr.gameplayTick` |
+| Model fallback (Req 6 c3, c9) | GLB load error, missing clip, and invalid `fighter.anim.json` each render the placeholder for that Fighter with one warning; a loaded model replaces the placeholder |
+| Effects pool (Req 32 c1, c9–c11) | Impact at `hitPos`, block spark of the other type at its `hitPos`; removal at exactly the lifetime for 100 and 1,000 ms; `maxActive` 1 and 64; the 65th request reuses the oldest slot of either type; `beginMatch` clears without reallocating (same slot array) |
+| Shake (Req 32 c7, c8) | Offset 0 at and after the duration and for duration 0; a second trigger keeps the greater intensity and the new duration; x and z offsets always 0 |
+| Audio director (Req 33 c1–c3, c5, c7, c8) | Events before unlock are dropped and not replayed after; one `play` per mapped event, `hit_*` by attack id and no generic hit; `counter` plus `hit_*` for a Counterpunch; two events on one Tick give two plays; no `play` while paused; `pauseSfx` and `resumeSfx` keep offsets |
+| Volume and backend (Req 33 c4, c6, c9) | Defaults 80/60/80 give gains 0.8, 0.6, 0.8; any 0 gives 0; paused music with attenuation 50 is half; fake context sees `resume()` on first `keydown` and on first `pointerdown`; a failed fetch or decode logs one warning naming the file and other sounds still play; a throwing `AudioContext` constructor gives a no-op backend |
+| Config (Req 31 c3, 32 c1, c7, c10, 33 c4, c7) | Each `presentationConfig` field just below and above its range and non-integer; several errors reported together; boot refused with the LoadFailedScreen |
+
+#### P4.6.2 Property tests
+
+New P4 properties are Properties 65–74 in the Correctness Properties section, each one property-based test with at least 100 runs. Generators are in section 13.9.
+
+| Existing property | P4 change |
+|---|---|
+| 1–4, 25 (determinism, round trip, restore, invalid states, fingerprint) | Run with `arbHitStopConfig`; states include non-zero `hitStopRemaining`; Property 4 adds the P4.1.3 parse checks |
+| 20 (history) | Frozen Ticks add no entry; indexing stays in Gameplay_Ticks |
+| 32 (Input_Buffer window), 55 (round timer) | Windows and decrements are counted in Gameplay_Ticks, with frozen Ticks inserted |
+| 24 (camera framing) | Also holds with any shake offset in 0–0.5 world units |
+
+#### P4.6.3 Browser tests (Playwright)
+
+| Test | Method | Req |
+|---|---|---|
+| Frame time | 60-second Match on Hard with full assets in `--mode e2e`; a hook records every rAF timestamp; report average fps, p99, and maximum frame time. Gate on the Reference_Desktop (manual run, saved trace); CI runs the same test as a non-gating report | 34 c1, c2, D11 |
+| Draw calls | Stress scene with both stylized models, 64 active effects, and a shake; `renderer.info.render.calls ≤ 100` on every sampled frame | 34 c5 |
+| Input-to-pose latency | 100 jab presses spaced 1 s apart with the Player_Fighter Able_To_Act (`ai.enabled = false`); latency per P4.5.4; pass when ≥ 95 are ≤ 50 ms and all are ≤ 100 ms | 34 c4, D28 |
+| Load time | Empty cache, CDP `Network.emulateNetworkConditions` at 50 Mbit/s; time from navigation start to `data-ready`; ≤ 5 s on the Reference_Desktop, reported in CI | 34 c6 |
+| Audio latency | Click to unlock; e2e hook records `baseLatency + outputLatency` and the time from Tick execution to `source.start`; sum ≤ 50 ms | 33 c1, c3 |
+| Audio unlock | Before any gesture no sound node starts and no error is shown; after a click, `ctx.state === 'running'` within 100 ms | 33 c5 |
+| Missing assets | `page.route` aborts `fighter.glb` and one sound file; placeholders render, one warning per file, a full Match plays with no `pageerror` | 6 c9, 33 c9, 14 c6 |
+
+---
+
 ## Error Handling
 
 M1 error conditions, how each is detected, and the resulting behavior. The mechanisms are designed in sections 2, 5, 6, and 11.
@@ -1903,6 +3014,29 @@ M1 error conditions, how each is detected, and the resulting behavior. The mecha
 | P2: Attack command in a non-bufferable state (GuardBroken; non-permitted command inside an open Cancel_Window) | Step 4 | Discarded silently; no other effect | 20 c4, D12 |
 | P2: Block, slip, or movement while not Able_To_Act | Step 4 | Ignored; no effect | 7 c9; 17 c6, c11; 18 c7 |
 | P2: Missing selected Difficulty_Level at `createMatch` | `createMatch` options | Defaults to Normal | 22 c10 |
+| P3: Round, Knockdown, recovery, or scoring setting out of range or non-integer | `p3Schema.ts` (P3.1.7) | Initialization refused; every failing setting named; nothing defaulted | 25 c8, D22, 23 c10, D23 |
+| P3: `knockdown.separation < minSeparation` or ring width `< 2 × minSeparation` | Cross-field checks in Fx (P3.1.7) | Initialization refused naming the setting | 23 c10, D31 |
+| P3: `ruleset: 'match'` with `combat: 'm1'` | `p3Schema.ts` | Initialization refused (P3-Q20) | P3.1.1 |
+| P3: Config refused when starting a Match from a menu | `session.start` returns `{ ok: false }` (P3.7.2) | LoadFailedScreen lists the errors; Match counter `n` not advanced; `ui.difficulty` unchanged | 22 c11, D24 |
+| P3: Serialized state with `version !== 3` or inconsistent round, Knockdown, or score fields | `parseSimulationState` (P3.1.6) | `invalid-Simulation_State`; caller's state untouched | 3 c6 |
+| P3: Restore a state from another Match (different seed) | Fingerprint compare (D42) | `config-mismatch`; caller's state untouched | 3 c9 |
+| P3: Fighter_Commands during the announcement, interval, a Knockdown_Count, the rise Tick, or after Match end | Step 2b zeroes masks unless `prev.round.phase === 'fighting'` | Discarded silently; Input_Buffers not filled | 25 c2, c5; 23 c14, c22; 24 c6; D12, D21 |
+| P3: `tick()` or `step()` called after `match-end` | Ended-phase gate (P3.4.3) | Only the Tick counters and observation advance; no events, no resource or position change | 24 c6 |
+| P3: Unexpected standing-Fighter state on a Knockdown (not Attacking, HitStun, or Idle) | `transition()` finds no `knockdown-freeze` rule | State unchanged; trace violation fails tests (P3.1.2) | 4 c6, D21 |
+| P3: Escape or P outside a Match, with `event.repeat`, or after `match-end` | `pauseController.active()` and the repeat check | Ignored; no Pause_Menu | 29 c8 |
+| P3: Tab hidden or window blurred during a Match | `blur` and `visibilitychange` listeners | Pause and show the Pause_Menu; no automatic resume | 29 c2 |
+| P3: Results hold timer pending when a new Match starts or the runtime unmounts | `GameRuntime` clears the timer | No stale switch to the Results_Screen | 30 c1 |
+| P4: `hitStop` outside 0–30 or not an integer | `p2Schema.ts` Tick-field checks (P4.1.1) | That Attack_Definition is rejected; error names the attack and field; initialization refused | 5 c1, c5 |
+| P4: Serialized state with `hitStopRemaining` out of range or `gameplayTick > tick` | `parseSimulationState` (P4.1.3) | `invalid-Simulation_State`; caller's state untouched | 3 c6 |
+| P4: Fighter_Command on a frozen Tick | Step 1 `frozenIntake` (P4.1.2) | Attack in a bufferable state is buffered with frozen age; all other commands discarded silently | 32 c3, c5; 20 c1, c4 |
+| P4: Presentation setting out of range or non-integer (blend, effect lifetime, pool size, shake, volumes, attenuation) | `presentationConfig.ts` zod schema at boot | Boot refused; LoadFailedScreen names every failing setting; nothing defaulted | 31 c3; 32 c1, c7, c10; 33 c4, c7 |
+| P4: Stylized model fails to load, misses a required clip, or has invalid clip metadata | `useGLTF` error boundary and clip check per Fighter (P4.2.4) | One `console.warn` naming the asset; that Fighter uses the placeholder for the page session; the Match continues | 6 c9 |
+| P4: Model not loaded yet when a Match starts | `<Suspense>` fallback | Placeholder until the model arrives | 6 c3, 34 c6 |
+| P4: Effect requested with the pool full | `spawn` finds no free slot | Oldest active effect is recycled | 32 c11 |
+| P4: Shake triggered while a shake is active | `shake.trigger` | Restarts with the greater intensity and the new duration | 32 c8 |
+| P4: Game_Events before the first key press or click | Audio director `unlocked` flag | Dropped without queueing; no sound, no error shown | 33 c5 |
+| P4: Audio asset fetch, decode, or media error | `assets.ts` and the media element `error` event | One warning naming the file; that sound is skipped; gameplay continues with no player-facing error | 33 c9 |
+| P4: `AudioContext` unavailable or its constructor throws | `webAudioBackend.ts` | One warning; Audio_System becomes a no-op; gameplay continues | 33 c9 |
 
 ---
 
@@ -2040,6 +3174,74 @@ Detailed P2 unit and scenario tests are in section P2.11. This subsection lists 
 | 21 Counterpunches | Properties 37, 40; counter unit tests; scenarios 3, 4 |
 | 22 AI difficulty | Properties 45, 46, 47, 48, 1; AI unit tests; per-level golden scenarios; difficulty validation tests (c11) |
 | 35 c2–c8 | Properties 30, 34, 37, 40, 43; Trade unit tests; scenario 4 |
+
+#### 13.8 P3 Testing
+
+Detailed P3 unit, scenario, UI, and browser tests are in section P3.9. This subsection lists the P3 generators, benchmark changes, and acceptance mapping.
+
+**Generators (P3 additions to 13.2 and 13.7):**
+
+| Generator | Produces | Bias for coverage |
+|---|---|---|
+| `arbMatchConfig` | Valid `'match'` config on top of `arbP2Config`: `rounds.duration` 1,800–10,800, `interval` 0–3,600, `betweenRecovery` 0–`maxHealth`, Knockdown and scoring fields in range, `K ≥ minSeparation`, width `≥ 2 × minSeparation` | Over-weights `duration = 1800`, `interval` 0, low `maxHealth`, high damage, `riseBase` 2 and 10, `riseVariance` 0, `recoveryPenalty` near the fraction (Health 1 on rising), weights 0 |
+| `arbKnockdownGeometry` | Ring `[B0, B1]`, `minSeparation`, `K`, fallen `F` in the ring, standing side | Ring width exactly `2 × minSeparation`, `F` at each end and at the center, `F ± K` exactly on a boundary |
+| `arbMatchMasks(len)` | Mask pairs (AI off) of up to 10,800 Ticks | "Finisher" scripts that trade jabs at low Health (double knockdowns), pressure scripts that knock down three times in one round, and idle stretches that let rounds end by time |
+| `arbRoundStats` | Two `FighterRoundStats` and `roundKnockdowns` 0–3 | Equal performance values, weights 0, large counts |
+| `arbMenuActions`, `arbPauseEvents` | Menu action sequences; keydown (Escape, P, with `repeat`), blur, `visibilitychange`, frames, and screen changes | Rapid toggles, events while on menus or after `match-end` |
+
+**Benchmark.** `bench/tick.bench.ts` adds a `'match'` run on Hard with Knockdowns and a round change in the measured window; thresholds as in 13.4 (Req 34 c3). Round start resets 121-entry history by setting `count = 0`, so no array is reallocated.
+
+**Browser tests.** The M1 "Auto-start" test of 13.5 is replaced by "Menu boot" (P3.9.5, D26); "Result and restart" runs only in an `'m1'` e2e build.
+
+**P3 acceptance checklist:**
+
+| Req | Verified by |
+|---|---|
+| 4 c4 KnockedDown | Property 8 (P3 table); transition unit tests |
+| 23 Knockdowns | Properties 49, 50, 51, 52, 53, 57, 60, 64; knockdown and repositioning unit tests; snap-flag render test; scenarios 1, 4, 6 |
+| 24 KO and TKO | Properties 51, 53, 54; KO, TKO, and ended-phase unit tests; scenarios 2, 3, 4; Playwright KO test |
+| 25 Rounds | Properties 53, 55, 56, 64; round unit tests; scenarios 1, 5; Playwright decision test |
+| 26 Scoring | Properties 57, 58, 63; scoring unit tests; scenario 5 |
+| 27 Fight HUD | Property 60; HUD jsdom tests |
+| 28 Main_Menu | Property 61; menu jsdom tests; Playwright menu boot |
+| 29 Pause_Menu | Properties 61, 62; pause controller jsdom tests; Playwright pause test |
+| 30 Results_Screen | Properties 59, 61, 63; results jsdom tests; Playwright full-Match tests |
+| 34 c7 | One-`setState`-per-frame HUD test with five Ticks of events |
+| 35 c9–c11 | Properties 51, 54, 55; Req 35 c11 unit test and scenario 6 |
+
+#### 13.9 P4 Testing
+
+Detailed P4 unit, property, and browser tests are in section P4.6. This subsection lists the P4 generators, benchmark changes, and acceptance mapping.
+
+**Generators (P4 additions to 13.2, 13.7, 13.8):**
+
+| Generator | Produces | Bias for coverage |
+|---|---|---|
+| `arbHitStopConfig` | `arbP2Config` or `arbMatchConfig` with `hitStop` 0–30 per attack | Over-weights 0, 1, and 30, equal values in a Trade, and high `hitStop` with low `maxHealth` so freezes overlap Knockdowns and Match end |
+| `arbFrozenInputs` | Per-Tick masks with a separate stream for frozen Ticks | Attack spam on frozen Ticks, non-attack bits only (for Property 67), and presses in non-bufferable states |
+| `arbFrameSchedule` | Frame timestamps at 30–144 fps with jitter and catch-up frames, mapped to `(prev, curr, alpha)` triples from a recorded run | Frames landing exactly on phase boundaries and during Hit_Stop |
+| `arbPresentationEvents` | Per-frame event lists, frame deltas in ms, pause and resume, unlock | Bursts above `maxActive`, two shakes in one frame, events before unlock |
+| `arbPresentationConfig` | Presentation settings inside and outside their ranges | Range edges and non-integers |
+
+**Benchmark.** `bench/tick.bench.ts` adds the P4 run of P4.5.4 (default `hitStop` values, frozen Ticks in the measured window); thresholds as in 13.4 (Req 34 c3).
+
+**P4 acceptance checklist:**
+
+| Req | Verified by |
+|---|---|
+| 5 c1 `hitStop` field | Property 74; config unit tests |
+| 6 c3, c9 Stylized models and fallback | Model fallback unit tests; Playwright missing-assets test |
+| 25 c1, c9 Timer and reset with Hit_Stop | Property 66; frozen-timer and round-start unit tests |
+| 31 Animations | Properties 68, 69, 71; clip-map, phase-sync, and blend unit tests |
+| 32 c2–c6 Hit_Stop | Properties 65, 66, 67; Hit_Stop and frozen-intake unit tests |
+| 32 c1, c7–c12 Effects | Properties 70, 71; pool and shake unit tests; draw-call stress test |
+| 33 Audio | Properties 72, 73, 71; director and backend unit tests; Playwright audio latency, unlock, and missing-assets tests |
+| 34 c1, c2 Frame rate and frame time | Playwright frame-time trace on the Reference_Desktop |
+| 34 c3 Tick time | Benchmark P4 run |
+| 34 c4 Input-to-pose latency | Playwright latency harness; phase-sync unit test (D28) |
+| 34 c5 Draw calls | Playwright draw-call stress test |
+| 34 c6 Load time | Playwright load-time test with throttling |
+| 34 c7 HUD updates | P3 one-`setState`-per-frame test, rerun with P4 consumers attached |
 
 ---
 
@@ -2339,6 +3541,166 @@ Properties 29–48 run in `'p2'` mode. Unless stated otherwise they use `arbP2Co
 
 **Validates: Requirements 22.6, 22.4**
 
+### Property 49: Knockdown repositioning model
+
+*For any* valid ring `[B0, B1]` with width `≥ 2 × minSeparation`, any `K ≥ minSeparation`, any fallen position F in the ring, and any standing position at least `minSeparation` from F, `reposition` leaves F unchanged and moves the standing Fighter to the point chosen by a reference model of Req 23 c3–c6 (preferred side, then opposite side, then farther end, ties to the preferred end); the result is in the ring, at least `minSeparation` from F, facings point at each other, and `teleportedAt` equals the Tick. In a double knockdown neither position changes.
+
+**Validates: Requirements 23.3, 23.4, 23.5, 23.6, 23.7, 23.8, 23.17**
+
+### Property 50: Rise count and PRNG draw order
+
+*For any* `'match'` config and command sequence, each Fighter entering KnockedDown on Tick g gets rise count `clamp(riseBase + riseIncrease × earlier + floor(u × (riseVariance + 1) / 2^32), 2, 10)`, where `earlier` is its Match Knockdowns before g and u is the next sfc32 output after the step-2a AI draws (player before AI in a double knockdown); the PRNG state after step 8 has advanced by exactly one step per fallen Fighter.
+
+**Validates: Requirements 23.11, 3.7**
+
+### Property 51: Knockdown_Count timeline
+
+*For any* `'match'` run, while a Knockdown_Count started on Tick a runs, the count on Tick g is `1 + floor((g − a) / 60)`; a `knockdown-count` event with the new value is emitted exactly on Ticks where it increases (values 2–10); a Fighter with rise count r ≤ 9 becomes Idle exactly on `a + 60(r − 1)`; a Fighter with rise count 10 never rises; and on Tick `a + 540` the Match ends by KO if any Fighter is still KnockedDown.
+
+**Validates: Requirements 23.2, 23.12, 23.15, 24.1**
+
+### Property 52: Rise effects
+
+*For any* `'match'` run and any rise on Tick g, after that Tick the risen Fighter's Health equals `clamp(roundHalfUp(maxHealth × (recoveryFraction − recoveryPenalty × (matchKnockdowns − 1))), 1, maxHealth)`, its Stamina equals its value before g, its Guard is `guard.recovery` if it was 0 and unchanged otherwise, its `pendingGuardRecovery` is false and `postSlip` is null, both combo counters are 0, and both Input_Buffers are empty; and on every Knockdown entry Tick both combo counters are 0.
+
+**Validates: Requirements 23.12, 23.18, 23.19, 23.20, 23.21, 23.22, 23.23**
+
+### Property 53: Commands have no effect outside the fighting phase
+
+*For any* reachable `'match'` state whose round phase is not `'fighting'` (announcement, Knockdown_Count including the rise Tick, between-round interval, or ended), stepping with arbitrary player and external AI masks yields the same next state and events as stepping with zero masks, no hit, block, or slip event is emitted, and no Input_Buffer is filled; and while the phase is `'ended'`, Health, Stamina, Guard, positions, FSM states, score, and timer stay unchanged on every later Tick.
+
+**Validates: Requirements 23.14, 23.22, 24.6, 25.2, 25.3, 25.4, 25.5**
+
+### Property 54: Match outcome model
+
+*For any* `'match'` config and command sequence, the Match ends at most once, with exactly one `match-end` event whose result equals a reference model: TKO on the Tick of a third round Knockdown (draw if both Fighters reach it, otherwise the other Fighter wins); otherwise KO at count 10 (draw if both are still down, otherwise the risen Fighter wins); otherwise Decision after round 3 by total points; `round` is the current round and `roundTime` is `duration − timer`; a KO or TKO in round 1 or 2 is followed by no `round-start` event; and every Knockdown emits one `knockdown` event and adds 1 to the fallen Fighter's round and Match totals.
+
+**Validates: Requirements 23.1, 24.1, 24.2, 24.3, 24.5, 25.6, 25.7**
+
+### Property 55: Round timer accounting
+
+*For any* `'match'` run, the round timer decreases by exactly 1 on a Tick if and only if the round phase after step 3 is `'fighting'` and the timer was above 0, and is otherwise unchanged; the `round-start` event of a round starting on `a` is emitted on `a + 120` and the first decrement happens on `a + 121`; a round ends by time on the first Tick the timer is 0 with no Knockdown_Count running; and every `roundTime` in events equals the number of Ticks the timer ran in that round (plus the current Tick for `knockdown` events).
+
+**Validates: Requirements 25.1, 25.3, 25.4, 23.2, 23.13, 24.5, 35.11**
+
+### Property 56: Round transition model
+
+*For any* `'match'` run in which round n (1 or 2) ends by time on Tick E, round n + 1 starts on `E + interval`; at that Tick both Fighters are Idle at their start positions with Stamina and Guard at maximum, Health `min(maxHealth, h + betweenRecovery)` where h is the Health at E, every field of the P3.5.2 reset list reset, `roundKnockdowns` 0, `matchKnockdowns` and all earlier round scores unchanged, and the history holding only the round-start observation; and no AI regular attack of the round starts on a Tick T with `T − acceptFromAt` below the profile's (low-Stamina-adjusted) attack interval.
+
+**Validates: Requirements 25.2, 25.5, 25.9, 25.10, 25.11, 25.12, 24.4**
+
+### Property 57: Scoring statistics accounting
+
+*For any* `'match'` run, each Fighter's statistics in each round equal a recount over that round's Ticks: `thrown` = number of its Attacking entries (new, buffered, cancel); `landed` = its `hit-landed` events; `damage` = total Health removed from the opponent by those hits; `blocked` = its `attack-blocked` events; `counters` = its `counterpunch` events; `knockdownsScored` = the opponent's `knockdown` events; all are non-negative integers.
+
+**Validates: Requirements 26.1, 26.2, 26.3, 26.4, 26.5, 26.6**
+
+### Property 58: Round points and decision model
+
+*For any* two round statistics, weights, and `roundKnockdowns` in 0–3, `scoreRound` gives `max(6, base − roundKnockdowns)` to each Fighter, where base is 10 and 9 for the strictly greater and lesser performance value and 10 each on a tie; every recorded round's points are integers in 6–10; a KO or TKO records points for the final round and leaves later rounds null; and a decision declares the higher three-round total the winner, or a draw if equal.
+
+**Validates: Requirements 26.7, 26.8, 26.9, 26.10, 26.11, 26.12, 26.13**
+
+### Property 59: Seed policy
+
+*For any* raw config with seed s and any sequence of Start Fight, Restart Match, and Rematch actions with Difficulty_Levels, the k-th started Match (k from 0) has seed `(s + k) mod 2^32` and an initial state deep-equal to `createInitialState` of that config and level (round 1, full timer, maximum resources, start positions, zero statistics); a refused config does not advance k; and in `'m1'`, `restart()` reproduces the initial seed.
+
+**Validates: Requirements 28.6, 29.5, 30.7, 13.6**
+
+### Property 60: HUD snapshot and labels model
+
+*For any* reachable `'match'` state and any sequence of per-frame event lists, `buildHudSnapshot` reports `ceil(timer / 60)` seconds, the round number, bar fractions `stamina / max` and `guard / max` exactly, and `knockdown.count` (or null); and `updateLabels` shows, per side, the newest combo count of 2 or more, "COUNTER", and "GUARD BREAK" exactly on the Gameplay_Ticks `at … at + 59` of their latest event, in separate rows.
+
+**Validates: Requirements 27.2, 27.3, 27.4, 27.6, 27.7, 27.8, 27.9, 23.16**
+
+### Property 61: Menu focus reducer
+
+*For any* menu (Main_Menu, Pause_Menu, Results_Screen) and any sequence of menu actions, exactly one item is focused after every action, exactly one Difficulty_Level is selected, the level changes only through Left/Right while the selector is focused or a click on a level, and Controls followed by Back or Escape leaves the level unchanged.
+
+**Validates: Requirements 28.3, 28.8, 28.9, 28.10, 28.11, 29.3, 30.6**
+
+### Property 62: Pause equivalence
+
+*For any* player command schedule and any interleaving of frames with pause and resume triggers (Escape, P, blur, `visibilitychange`), no Tick runs while paused, the first frame after resume counts only time since resume, triggers outside a Match or after `match-end` change nothing, and the sequence of Simulation_States equals the sequence of an unpaused run fed the same per-Tick commands.
+
+**Validates: Requirements 29.1, 29.2, 29.4, 29.7, 29.8, 1.4, 1.6**
+
+### Property 63: Results view
+
+*For any* reachable ended `'match'` state, `buildResultsView` shows the result's winner or draw, method, and round; on a decision, round points and totals equal the score; and per Fighter, thrown, landed, Counterpunches, and Knockdowns scored equal the sums over rounds, with landing percentage `roundHalfUp(100 × landed / thrown)` or 0 when nothing was thrown.
+
+**Validates: Requirements 30.2, 30.3, 30.4, 30.5**
+
+### Property 64: P3 configuration refusal
+
+*For any* `'match'` config with any combination of P3 fields inside and outside their P3.1.7 ranges (round duration, interval, recovery, Knockdown fields, weights, `K < minSeparation`, width `< 2 × minSeparation`), `createMatch` succeeds exactly when all are valid; otherwise it returns every violation, each naming its setting, and produces no state.
+
+**Validates: Requirements 25.8, 23.10**
+
+### P4 Properties
+
+Properties 65–67 run the simulation with `arbHitStopConfig` (`ai.enabled = false` unless stated). Properties 68–73 test the pure presentation modules in Node. Property 74 tests configuration validation.
+
+### Property 65: Hit_Stop value and scope
+
+*For any* `'p2'` or `'match'` config with `hitStop` values 0–30 and any command sequence, after every Gameplay_Tick `hitStopRemaining` equals the maximum `hitStop` over that Tick's landed hits (0 if none; blocked and slip-evaded contacts never count), and the next `hitStopRemaining` Ticks are exactly the frozen Ticks before the next Gameplay_Tick.
+
+**Validates: Requirements 32.2, 32.6**
+
+### Property 66: Frozen Tick model
+
+*For any* reachable state with `hitStopRemaining > 0` and any input, the next state equals the previous state except that `tick` increases by 1, `hitStopRemaining` decreases by 1, and each Fighter's Input_Buffer becomes `{ highest new attack, receivedAt: gameplayTick }` exactly when an attack command passes the step 2b gates for a Fighter in a bufferable state (D12) and is otherwise unchanged; the event list is empty, and the AI_Controller is not called, so the PRNG state and AI memory are unchanged.
+
+**Validates: Requirements 32.3, 32.5, 25.1, 20.1, 20.4**
+
+### Property 67: Hit_Stop shifts timestamps exactly
+
+*For any* config and command sequence with no attack commands on frozen Ticks, a run with the config's `hitStop` values and a run with every `hitStop` set to 0, fed the same commands per Gameplay_Tick, agree after each Gameplay_Tick on every field except `tick`, `hitStopRemaining`, and `configFingerprint`, and emit identical Game_Events (including every `at`); and each event of the first run is emitted on the second run's Tick number plus the number of frozen Ticks before it.
+
+**Validates: Requirements 32.2, 32.4, 4.7, 9.3**
+
+### Property 68: Pose selection model
+
+*For any* recorded run, attack definitions, and frame schedule at 30–144 fps, the clip chosen for each Fighter equals the P4.2.1 table for `curr` (distinct for every FSM state and punch type); while Attacking, the punch segment equals `curr.fsm.phase` with progress `clamp((gt − s0) / len, 0, 1)`; so the displayed segment changes within 1 Tick of each phase boundary and two frame schedules give the same segment for the same state.
+
+**Validates: Requirements 31.1, 31.2, 31.7**
+
+### Property 69: Blend and hold model
+
+*For any* sequence of frames with state changes, the blend weight equals a reference model: 0 Ticks (weight 1 on the first frame, startup pose shown) when entering Attacking, otherwise `blendTicks[kind]` in 0–6; every key change, including one during a blend or one leaving Attacking early, restarts from the displayed pose and reaches weight 1 no later than `enteredAt − 1 + ticks`; and whenever `prev.gameplayTick === curr.gameplayTick` (Hit_Stop) the displayed pose of both Fighters is unchanged.
+
+**Validates: Requirements 31.3, 31.4, 31.5, 31.6, 31.8**
+
+### Property 70: Effects pool and shake model
+
+*For any* `maxActive` in 1–64, lifetimes in 100–1,000 ms, and sequence of per-frame event lists and frame deltas, the pool matches a reference model: one `impact` per `hit-landed` and one `blockSpark` per `attack-blocked` at its `hitPos`, each active while its age is below its lifetime, never more than `maxActive` active, and a request at the limit replaces the oldest active effect; and the shake state after each `counterpunch` or `knockdown` has the greater of the active and new intensities (or the new one if none is active) and the new duration, with a vertical offset of exactly 0 at and after the end of its duration.
+
+**Validates: Requirements 32.1, 32.7, 32.8, 32.9, 32.10, 32.11**
+
+### Property 71: Presentation is read-only
+
+*For any* config and command sequence, a run whose frames are consumed by the Animation_System, Effects_System, and Audio_System (fake backend) produces Simulation_States and Game_Events deep-equal to a run with all three disabled, and every consumed state and event list is deep-equal to a clone taken before consumption.
+
+**Validates: Requirements 31.9, 32.12, 2.5**
+
+### Property 72: Audio director model
+
+*For any* sequence of unlock, Match start, pause, resume, and per-frame event lists, the director's commands equal a reference model: nothing before unlock and no later replay of dropped events; afterwards one `play` per mapped event in list order, with `hit_<attackId>` for each `hit-landed` and no generic hit sound; no `play` while paused; `pauseSfx` and `resumeSfx` around each pause with each voice resumed at its recorded offset.
+
+**Validates: Requirements 33.1, 33.2, 33.3, 33.5, 33.7, 33.8**
+
+### Property 73: Effective volume
+
+*For any* integer master, music, and sound-effect volumes in 0–100 and pause attenuation in 0–100, the effective sound-effect gain is `master/100 × sfx/100`, the effective music gain is `master/100 × music/100`, multiplied by `(100 − attenuation)/100` while paused, every gain is in [0, 1], and any volume of 0 gives exactly 0 for the channels it controls.
+
+**Validates: Requirements 33.4, 33.6, 33.7**
+
+### Property 74: P4 configuration validation
+
+*For any* config whose attacks' `hitStop` values and presentation settings (blend Ticks, effect lifetimes, pool size, shake intensity and duration, volumes, pause attenuation) are generated inside and outside their ranges, validation succeeds exactly when every value is in range and an integer where required, and otherwise reports every violation, each naming its setting (and the attack for `hitStop`).
+
+**Validates: Requirements 5.1, 5.5, 31.3, 32.1, 32.7, 32.10, 33.4, 33.7**
+
 ---
 
 ## Open Questions and Risks
@@ -2391,8 +3753,8 @@ Each item lists the design's current (most literal) behavior and a recommended r
 
 | # | Status | Issue | Design now | Recommendation |
 |---|---|---|---|---|
-| P2-Q1 | Open | D40 says the AI returns commands and the PRNG state. Holding a chosen block until the attack ends (Req 22 c4) needs memory of a random outcome that later Ticks cannot recompute | `decideAiP2` also returns `aiMemory` (`heldBlockFor`), committed by step 2a like the PRNG (P2.10.2) | Amend D40: the AI returns commands, PRNG state, and AI memory stored in the Simulation_State |
-| P2-Q2 | Open | Req 20 c8 and c12 (increment on every landed hit against a HitStun target) conflict with D41 (zero hit-stun hits never extend a Combo) | Zero-stun hit on a HitStun target: counter unchanged, no `combo` event, n = current counter. On a target not in HitStun: counter set to 1 (Req 20 c7) | Amend Req 20 c12: "exactly once per landed hit, except that a zero hit-stun hit on a Fighter in HitStun leaves it unchanged (D41)" |
+| P2-Q1 | Resolved (D44) | D40 says the AI returns commands and the PRNG state. Holding a chosen block until the attack ends (Req 22 c4) needs memory of a random outcome that later Ticks cannot recompute | `decideAiP2` also returns `aiMemory` (`heldBlockFor`), committed by step 2a like the PRNG (P2.10.2) | Amend D40: the AI returns commands, PRNG state, and AI memory stored in the Simulation_State |
+| P2-Q2 | Resolved (D44) | Req 20 c8 and c12 (increment on every landed hit against a HitStun target) conflict with D41 (zero hit-stun hits never extend a Combo) | Zero-stun hit on a HitStun target: counter unchanged, no `combo` event, n = current counter. On a target not in HitStun: counter set to 1 (Req 20 c7) | Amend Req 20 c12: "exactly once per landed hit, except that a zero hit-stun hit on a Fighter in HitStun leaves it unchanged (D41)" |
 | P2-Q3 | Open | Req 35 c1 has no step for Stamina or Guard regeneration, and Req 19 c3 does not say at which point in the Tick the state is evaluated | Both regenerate in step 5 using the post-step-4 state (P2.2.1) | Accept and add "regeneration" to step 5 in Req 35 c1 |
 | P2-Q4 | Open | During the HitStun that follows a hit on a GuardBroken Fighter (D17), Req 17 c9 allows Guard regeneration from 0, then D17 sets Guard to the recovery value when HitStun ends, which may lower Guard | Literal: regeneration runs, then Guard is set to the recovery value | Suppress Guard regeneration while `pendingGuardRecovery` is set |
 | P2-Q5 | Open | Req 5 c5 allows non-integer `staminaCost` and `guardDamage`, but Stamina and Guard are integers (D5) | Both rounded half up once at compile; the low-Stamina test compares against the rounded cost | Require integer `staminaCost` and `guardDamage` in P2 |
@@ -2400,9 +3762,9 @@ Each item lists the design's current (most literal) behavior and a recommended r
 | P2-Q7 | Open | Req 18 c2 keeps the current state when a slip is rejected for low Stamina. It is unclear whether lower-priority block or movement in the same mask still applies | Literal: no transition and no movement that Tick (Req 4 c6) | Let a rejected slip fall through to block, then movement, per D9 |
 | P2-Q8 | Open | D12 buffers attacks only "outside a Cancel_Window". A non-permitted attack command inside an open window is therefore neither bufferable nor cancel-eligible | Discarded (Req 20 c4) | Buffer non-permitted commands inside the window, so they start when the attack ends |
 | P2-Q9 | Open | D12 discards commands received while GuardBroken but says nothing about a command already held when the Fighter enters GuardBroken | Kept; it can start if GuardBroken ends within its 6 Ticks | Clear the Input_Buffer on GuardBroken entry |
-| P2-Q10 | Open | Req 20 c5 requires a Cancel_Window on every Attack_Definition, but D2 allows `recovery = 0`, and a 0-Tick Recovery_Phase makes every window invalid under Req 20 c11 | Such a definition is rejected in `'p2'` mode | Make the window optional (absent means no cancels) when `recovery = 0` or the follow-up list is empty |
-| P2-Q11 | Open | Req 12 c4 measures the AI attack interval from the "previous jab", while Req 22 c6 lets the AI throw any punch type | Interval measured from the AI_Fighter's previous attack start of any type (`lastAttackStartAt`), including counterpunches and combo follow-ups | Amend Req 12 c4 for P2: "previous attack" |
-| P2-Q12 | Open | Req 12 c7 forbids AI jabs while not Able_To_Act, but combo follow-ups (Req 22 c7) are always issued while Attacking and may be jabs, and counterpunches (Req 22 c5) have no Able_To_Act condition | Req 12 c7 applies to the regular attack only; counterpunch and combo commands go through buffering and cancels | Scope Req 12 c7 to the regular attack decision |
+| P2-Q10 | Resolved (D44) | Req 20 c5 requires a Cancel_Window on every Attack_Definition, but D2 allows `recovery = 0`, and a 0-Tick Recovery_Phase makes every window invalid under Req 20 c11 | Window optional; absent means no cancels (a present window is still validated per Req 20 c11) | Make the window optional (absent means no cancels) when `recovery = 0` or the follow-up list is empty |
+| P2-Q11 | Resolved (D44) | Req 12 c4 measures the AI attack interval from the "previous jab", while Req 22 c6 lets the AI throw any punch type | Interval measured from the AI_Fighter's previous attack start of any type (`lastAttackStartAt`), including counterpunches and combo follow-ups | Amend Req 12 c4 for P2: "previous attack" |
+| P2-Q12 | Resolved (D44) | Req 12 c7 forbids AI jabs while not Able_To_Act, but combo follow-ups (Req 22 c7) are always issued while Attacking and may be jabs, and counterpunches (Req 22 c5) have no Able_To_Act condition | Limit applies only to regular attacks; counterpunch and combo commands go through buffering and cancels | Scope Req 12 c7 to the regular attack decision |
 | P2-Q13 | Open | D18 allows one action command "plus a held block", and D9 ranks a new attack above block, so a regular attack makes the AI_Fighter drop a held block before the player's attack ends (Req 22 c4) | Literal: the attack is issued and wins | Suppress the regular attack (not counterpunch or combo) while a block is held |
 | P2-Q14 | Open | D10 orders events by owning Fighter but does not say who owns `attack-blocked`, `slip-evaded`, `guard-break`, `counterpunch`, and `combo` | All contact events are owned by the attacker (P2.1.5) | Amend D10 to name the attacker as owner of contact events |
 | P2-Q15 | Open | Req 35 c6 removes Counterpunch status in a Trade. Req 21 c2 counts only the "first such hit" in the post-slip window | A traded hit still uses up the window | Accept |
@@ -2423,4 +3785,85 @@ Each item lists the design's current (most literal) behavior and a recommended r
 
 #### 15.3 Readiness
 
-The P2 combat design is complete for review. P2-Q1, P2-Q2, P2-Q10, P2-Q11, and P2-Q12 should be resolved before implementation planning, because each one changes a requirement's literal wording or a data shape. The other items are tuning or behavior choices that can be changed later without restructuring.
+The P2 combat design is complete for review. P2-Q1, P2-Q2, P2-Q10, P2-Q11, and P2-Q12 are resolved by D44. The other items are tuning or behavior choices that can be changed later without restructuring.
+
+### 16. P3 Open Questions and Risks
+
+#### 16.1 Open questions
+
+The design follows the most literal reading of Req 23–30 and changes no gameplay rule. Each item names that reading and a recommendation for the requirements owner.
+
+| # | Status | Issue | Design now | Recommendation |
+|---|---|---|---|---|
+| P3-Q1 | Open | Req 19 c3 and Req 17 c9 do not stop regeneration during the announcement, a Knockdown_Count, or the interval | Stamina and Guard regenerate in those phases (P3.2.1 step 5) | Accept; the interval sets both to maximum anyway |
+| P3-Q2 | Open | A Knockdown on the Tick the timer reaches 0 (Req 35 c11) followed by a rise leaves no time in the round | The round ends by time on the rise Tick (P3.2.2) | Accept and state it in Req 35 c11 |
+| P3-Q3 | Open | Req 25 c1 stops the timer "during a Knockdown_Count", but Req 35 c11 needs a decrement on the Knockdown Tick and Req 23 c13 resumes "on that Tick" | The timer runs on a Tick exactly when the phase after step 3 is `'fighting'`: it runs on the Knockdown Tick and on the last rise Tick | Amend Req 25 c1 with this rule |
+| P3-Q4 | Open | Req 23 c15 emits `knockdown-count` when the count "increases"; count 1 is set, not increased | No event for 1; the `knockdown` event marks it | Accept |
+| P3-Q5 | Open | Req 25 c4 emits `round-end` only for a time-out; a KO or TKO round has none | No `round-end` on KO or TKO; `match-end.round` names the round | Accept |
+| P3-Q6 | Open | Req 23 c11 computes a rise count on every KnockedDown entry, including a third Knockdown that ends the Match by TKO | The count is computed and the PRNG draw made, then unused | Accept; keeps draw counts independent of the outcome |
+| P3-Q7 | Open | The requirements give no ranges for `riseBase`, `riseIncrease`, `riseVariance`, or an upper bound for scoring weights | 2–10, 0–8, 0–8; weights 0–1,000,000 (P3.1.7) | Add these ranges to Req 23 c11 and Req 26 c7 |
+| P3-Q8 | Open | Rise Health uses non-integer fractions, so a product that is mathematically `x.5` may round down (Req 23 c12) | Doubles with `roundHalfUp`; deterministic | Express fraction and penalty as integer per-mille values |
+| P3-Q9 | Open | Req 25 c9 does not list AI memory (a held block), but D35 clears "all transient combat state" | `aiMemory.heldBlockFor = null` at round start | Add AI memory to Req 25 c9 |
+| P3-Q10 | Open | Req 26 c3 adds damage only for landed hits, so chip damage is not "damage dealt", even when chip causes a Knockdown (D20) | Chip excluded from `damage`; the Knockdown still scores | Decide whether chip counts toward damage dealt |
+| P3-Q11 | Open | D24 adds the Match count to the seed; the sum can exceed the uint32 range of Req 3 c2 | Wraps modulo 2^32 | Amend D24 with "modulo 2^32" |
+| P3-Q12 | Accepted | Req 30 c1 allows up to 3 s before the Results_Screen | 1.5 s hold with the final pose visible | Accept; tuning value |
+| P3-Q13 | Open | Req 29 c1 allows pausing "from round 1 start"; it is unclear whether the first announcement counts | Pause allowed during every announcement | Accept |
+| P3-Q14 | Accepted | In a double knockdown where only one Fighter reaches a third round Knockdown, D19 ends by TKO and the other Fighter's count never starts | TKO on the Knockdown Tick (P3.4.1) | Accept |
+| P3-Q15 | Open | Req 23 c21 does not clear `lastBlockedAt` on a rise, so a Guard regeneration delay can continue after rising | Kept on rise; cleared at round start (Req 25 c9) | Accept |
+| P3-Q16 | Open | Req 25 c4 sets a GuardBroken Fighter to Idle at round end; Guard stays 0 until the interval sets it to maximum, and after round 3 it stays 0 | Literal | Accept; no gameplay effect after the round |
+| P3-Q17 | Open | Req 27 c6–c8 count label time in Ticks, while D36 measures gameplay durations in Gameplay_Ticks; with P4 Hit_Stop labels would last longer than 60 Ticks | Labels use Game_Event Gameplay_Ticks (equal to Ticks until P4) | Amend Req 27 to Gameplay_Ticks, or switch the tracker to `tick` in P4 |
+| P3-Q18 | Open | D26 replaces the M1 auto-start (Req 13 c1) and the P2 selector (P2-Q17); the `'m1'` ruleset and its restart (D8) remain only for tests | Main_Menu for all players; `'m1'` builds for tests | Mark Req 13 c1 and P2-Q17 superseded from P3 |
+| P3-Q19 | Open | D40 calls the AI every Tick, but it can do nothing outside the fighting phase | Step 2a is skipped when `prev.round.phase !== 'fighting'`; PRNG and memory unchanged | Accept and note it in D40 |
+| P3-Q20 | Open | P3 rounds, recovery, and scoring read Stamina, Guard, and Counterpunches, which exist only with P2 combat | `'match'` requires `combat: 'p2'` | Accept |
+| P3-Q21 | Open | Req 23 c1 asks for the "elapsed round time" in the `knockdown` event, which is produced in step 8 before step 9 decrements the timer | `roundTime = duration − timer + 1`, including the Knockdown Tick | Accept; matches `match-end.roundTime` for a TKO on that Tick |
+
+#### 16.2 Risks
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| Match-length property runs (up to 10,800 Ticks) push the suite past 60 s (Req 15) | CI time limit | Short-round generators (P3.9.3); long variants in a nightly job |
+| The Playwright decision test runs about 96 s in real time per browser | CI cost | Run it in Chrome on every push and in Firefox and Edge nightly |
+| Menu, pause, and gameplay keys share `window` listeners | A menu key could latch a command or be handled twice | The sampler is reset on every Match start, pause, and resume; Escape and P are not mapped; each menu handles only its own keys |
+| Repositioning swaps sides | Code that cached left/right from the start positions (section 7.1) breaks | `leftRight` recomputed every Tick (P3.2.1); Property 49 and the side-swap unit test |
+| Golden hashes depend on draw order, including the rise draws | Any reordering changes every AI Match | Fixed draw order (P3.3.1), Property 50, golden scenarios per Difficulty_Level |
+
+#### 16.3 Readiness
+
+The P3 design is complete for review. P3-Q3, P3-Q7, P3-Q9, and P3-Q11 should be settled in the requirements before implementation; the rest are accepted literal readings or tuning choices that do not change the structure.
+
+### 17. P4 Open Questions and Risks
+
+#### 17.1 Open questions
+
+The design follows the most literal reading of Req 31–34 and changes no gameplay rule. Each item names that reading and a recommendation for the requirements owner.
+
+| # | Status | Issue | Design now | Recommendation |
+|---|---|---|---|---|
+| P4-Q1 | Open | Req 32 c5 handles frozen-Tick commands "per Requirement 20", and D12 does not list Able_To_Act states as bufferable. A Fighter that is Idle or Walking during a freeze (after a zero hit-stun hit, D41) loses an attack press | Discarded (Req 20 c4) | Buffer attack presses on frozen Ticks for Able_To_Act Fighters too, with `receivedAt = g` |
+| P4-Q2 | Open | Slip, block, and movement are not bufferable, so a slip pressed during a freeze is consumed by `sampleTick()` and lost; held block and movement apply again on the first Gameplay_Tick | Literal: slip press discarded | Accept; freezes last at most 30 Ticks (0.5 s) |
+| P4-Q3 | Accepted | A frozen-Tick command has no Gameplay_Tick of its own | `receivedAt = g` (the hit Tick), usable on g+1…g+5, the same window as any other buffered command (P4.1.2) | Accept |
+| P4-Q4 | Open | Camera shake moves the camera, while Req 6 c5 keeps the midpoint within 1% of center and Req 6 c6 keeps both Fighters in view every frame | Vertical-only shake; fit padding includes the current intensity (P4.3.3) | Accept; if horizontal shake is wanted, exempt active shakes from Req 6 c5 |
+| P4-Q5 | Open | Req 31 c3 names one "configured blend duration". With Hit_Stop holding poses (c8), a non-zero HitStun blend shows the target near its pre-hit pose for the whole freeze | Blend Ticks per target state; HitStun defaults to 0 (P4.2.3) | Amend Req 31 c3 to allow a duration per state |
+| P4-Q6 | Open | P3-Q17: HUD labels last 60 Gameplay_Ticks, so with Hit_Stop they stay on screen longer in real time | Labels use Gameplay_Ticks and freeze with the Match | Amend Req 27 c6–c8 to Gameplay_Ticks |
+| P4-Q7 | Accepted | The requirements do not say whether effect lifetimes and shakes run during Hit_Stop or pause | Real-time ms clock that runs during Hit_Stop and stops while paused (P4.3.1) | Accept |
+| P4-Q8 | Open | Req 25 c4 emits no `round-end` for a KO or TKO (P3-Q5), and Req 33 c1 has no `match-end` sound, so a KO ends with no bell | No sound for `match-end` | Add a `match-end` bell to Req 33 c1 |
+| P4-Q9 | Open | Req 33 c1 times sounds from "the emitting Tick". In a catch-up frame (D1), earlier Ticks were simulated up to 4 Ticks (67 ms) before their frame | The emitting Tick's time is the moment it is executed | Accept and state it in Req 33 c1 |
+| P4-Q10 | Open | A Match can start before the stylized model finishes loading | Placeholder until loaded, then the model replaces it mid-Match (P4.2.4) | Accept; the GLB is under 2 MB and loads during the Main_Menu |
+| P4-Q11 | Open | Req 34 c4 measures "present the first frame", which a browser cannot observe directly | rAF timestamp + one refresh interval, cross-checked with the Event Timing API (P4.5.4) | Accept, and confirm once with a high-speed camera on the Reference_Desktop |
+| P4-Q12 | Accepted | Req 32 c2 freezes after any landed hit, including a Match-ending one | Step 1 runs before the ended-phase gate; in the app the ticker stops after `match-end` (P3.8.4), so the final pose simply holds | Accept |
+| P4-Q13 | Open | Req 31 c1 lists Blocking, Slipping, and GuardBroken animations, which exist only with `combat: 'p2'`; `'m1'` builds never show them | Clips exist for all states; unused in `'m1'` | Accept |
+
+#### 17.2 Risks
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| A timer in `src/sim` that reads `tick` instead of `gameplayTick` | Wrong durations after a freeze | Property 67 (timestamp shift) and Property 66 (frozen-Tick model) |
+| Skinned meshes and shadows on Iris Xe class graphics | Misses Req 34 c1, c2 | ≤ 30 bones per Fighter, one 1024² shadow map, DPR cap; measure the frame-time trace early with the real GLB |
+| Web Audio output latency on some devices or browsers above 50 ms | Misses Req 33 c1, c3 | `latencyHint: 'interactive'`; the Playwright audio-latency test reports `outputLatency` per browser; Bluetooth output is outside the Reference_Desktop definition |
+| `AnimationMixer` or Three.js helpers allocating per frame | GC pauses against Req 34 c2 | `update(0)` with explicit `time`, `slerpFlat` on preallocated arrays, scratch objects; heap growth tracked in the 60-second trace |
+| Model or audio assets larger than budgeted | Misses Req 34 c6 or slows first Match | Size budgets in P4.5.5 checked by a build-size script in CI; assets are off the critical path |
+| Pausing sound effects by stop-and-restart can click at the cut | Audible artifact on pause | 5 ms gain ramp on stop and start of each paused voice |
+
+#### 17.3 Readiness
+
+The P4 design is complete for review, and with it all four parts of the design. P4-Q1, P4-Q4, and P4-Q5 should be settled in the requirements before implementation; the rest are accepted literal readings, measurement choices, or tuning.
