@@ -218,19 +218,19 @@ Conventions: "Property N" refers to the design's Correctness Properties section.
     - Exactly 6 Ticks of backlog runs 5 and zeroes the accumulator; pause then resume after 10 s runs 0 extra Ticks; `NaN` and `Infinity` timestamps add 0
     - _Requirements: 1.3, 1.6, 1.7_
 
-- [ ] 12. Implement the keyboard Input_System
-  - [ ] 12.1 Implement the keymap and the pure `InputSampler`
+- [x] 12. Implement the keyboard Input_System
+  - [x] 12.1 Implement the keymap and the pure `InputSampler`
     - `src/input/keymap.ts`: `KeyboardEvent.code` → command bit (`KeyA`, `ArrowLeft`, `KeyD`, `ArrowRight`, `KeyJ`), a binding list reused later by the Controls screen
     - `src/input/inputSampler.ts`: edge-latched attack presses (first-arriving per sample, `repeat` ignored, consumed on the next `sampleTick`), level-sampled movement from the held set at sample time (D43), both directions → neither, `blur()`/`reset()` clears all keys, unmapped codes ignored
     - _Requirements: 8.1, 8.2, 8.5, 8.6, 8.7, 8.8, 8.9, 8.10_
-  - [ ] 12.2 Implement the DOM keyboard adapter
+  - [x] 12.2 Implement the DOM keyboard adapter
     - `src/input/domKeyboard.ts`: the only DOM-bound input file; `window` `keydown`, `keyup`, and `blur` listeners forwarding to the sampler; returns a disposer
     - _Requirements: 8.5, 8.7_
-  - [ ]* 12.3 Write property test for Property 23: Input sampling model
+  - [x]* 12.3 Write property test for Property 23: Input sampling model
     - **Property 23: Input sampling model**
     - Use the `arbKeyEvents` generator
     - **Validates: Requirements 8.5, 8.6, 8.7, 8.8, 8.9, 8.10**
-  - [ ]* 12.4 Write unit tests for D43 and key mapping
+  - [x]* 12.4 Write unit tests for D43 and key mapping
     - Hold D across three samples; press and release D between samples gives nothing; press and release J between samples gives one Jab; Shift and Caps Lock do not change mapping
     - _Requirements: 8.1, 8.2, 8.5, 8.6_
 
