@@ -146,27 +146,27 @@ Conventions: "Property N" refers to the design's Correctness Properties section.
     - Default-config reachability: jab connects at `minSeparation`, at `dHi`, and at every 1 Fx step in `[minSeparation, Connect_Range)` through `detectHits`
     - _Requirements: 10.2, 10.6, 10.7, 10.10, 15.1, 15.7, 35.9, 35.10, 35.12_
 
-- [ ] 8. Implement the M1 AI_Controller inside step 2
-  - [ ] 8.1 Implement `decideAi` and wire it into step 2a
+- [x] 8. Implement the M1 AI_Controller inside step 2
+  - [x] 8.1 Implement `decideAi` and wire it into step 2a
     - `src/sim/ai/m1Ai.ts`: `decideAi(state: DeepReadonly<SimulationState>, rng, cfg) -> { mask, rng }` per design §9.2 (no commands after a result; approach while `2d ≥ connectRange2`; jab when Able_To_Act and the attack interval has passed since `lastJabStartAt ?? matchStartAt`; player read only through `observationFor(T − 1 − D)`); returns the received rng unchanged
     - In `stepInto` step 2a call `decideAi(prev, [...prev.rng], cfg)` when `cfg.ai.enabled`, commit the returned rng, and drop external `ai` commands in step 2b while the AI is enabled
     - _Requirements: 12.1, 12.2, 12.3, 12.4, 12.5, 12.6, 12.7, 12.8, 12.10, 12.13, 12.14, 2.2, 3.7, 35.1_
-  - [ ]* 8.2 Write property test for Property 18: AI decision model
+  - [x]* 8.2 Write property test for Property 18: AI decision model
     - **Property 18: AI decision model**
     - **Validates: Requirements 12.2, 12.3, 12.4, 12.7**
-  - [ ]* 8.3 Write property test for Property 19: AI sees the player only through the delayed observation
+  - [x]* 8.3 Write property test for Property 19: AI sees the player only through the delayed observation
     - **Property 19: AI sees the player only through the delayed observation**
     - **Validates: Requirements 12.5, 12.10, 12.13**
-  - [ ]* 8.4 Write property test for Property 27: M1 AI leaves the PRNG unchanged
+  - [x]* 8.4 Write property test for Property 27: M1 AI leaves the PRNG unchanged
     - **Property 27: M1 AI leaves the PRNG unchanged**
     - **Validates: Requirements 12.6, 12.14**
-  - [ ]* 8.5 Write property test for Property 16: Defeat and post-result stability
+  - [x]* 8.5 Write property test for Property 16: Defeat and post-result stability
     - **Property 16: Defeat and post-result stability**
     - **Validates: Requirements 4.10, 11.6, 11.7, 13.3, 35.9, 12.8**
-  - [ ]* 8.6 Write property test for Property 17: Event order and scope
+  - [x]* 8.6 Write property test for Property 17: Event order and scope
     - **Property 17: Event order and scope**
     - **Validates: Requirements 2.4, 35.12**
-  - [ ]* 8.7 Write unit tests for AI placement in the Tick
+  - [x]* 8.7 Write unit tests for AI placement in the Tick
     - AI decision runs before intake in step 2; an external `ai` command is dropped while the AI is enabled and accepted with `ai.enabled = false`; the AI uses the same acceptance rules as the player (approach ignored while not Able_To_Act)
     - _Requirements: 12.1, 2.2, 15.1, 35.1_
 

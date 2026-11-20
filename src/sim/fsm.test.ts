@@ -155,8 +155,10 @@ describe('transition() guards (Req 4 c5, c6, c8)', () => {
 describe('command intake (Req 2 c2, c7; D40)', () => {
   it('drops external AI_Fighter commands while the AI is enabled', () => {
     const enabled = cfgWith();
-    const r = step(createInitialState(enabled), tickInput(0, CMD.MoveLeft), enabled);
-    expect(r.state.fighters[1].fsm.kind).toBe('Idle');
+    const s = createInitialState(enabled);
+    for (const ext of [CMD.MoveRight, CMD.Jab, CMD.MoveLeft | CMD.Jab]) {
+      expect(step(s, tickInput(0, ext), enabled)).toStrictEqual(step(s, [], enabled));
+    }
   });
   it('accepts external AI_Fighter commands when the AI is disabled', () => {
     const r = step(createInitialState(cfg), tickInput(0, CMD.MoveLeft), cfg);

@@ -3,6 +3,7 @@
 // stepInto(prev, next, input, cfg) advances exactly one Tick of 1/60 s (Req 1 c1). It reads
 // only `prev`, the Tick's player commands, and the compiled config (Req 2 c3, Req 3 c3).
 import type { CompiledConfig } from './config/compile';
+import { decideAi } from './ai/m1Ai';
 import { checkHealthZero, combatStep } from './combat';
 import { newFsmTickContext, transition, type FsmTickContext } from './fsm';
 import { applyMovement, updateFacing } from './movement';
@@ -157,8 +158,17 @@ export function stepInto(
   const g: GTick = next.gameplayTick;
   const ctx = newFsmTickContext(g, trace);
 
-  // (2a) AI_Controller decision and PRNG commit (D40): task 8.
-  const aiMask: CommandMask = 0;
+  // (2a) AI_Controller decision and PRNG commit (D40, Req 12 c5-c6, c14): the AI reads the
+  // read-only state at the end of T-1 and a copy of its PRNG words; step 2 commits what it returns.
+  let aiMask: CommandMask = 0;
+  if (cfg.ai.enabled) {
+    const out = decideAi(prev, [prev.rng[0], prev.rng[1], prev.rng[2], prev.rng[3]], cfg);
+    aiMask = out.mask;
+    next.rng[0] = out.rng[0];
+    next.rng[1] = out.rng[1];
+    next.rng[2] = out.rng[2];
+    next.rng[3] = out.rng[3];
+  }
 
   // (2b) Command intake and validation.
   const mask = intakeMasks(next, input, aiMask, cfg);
