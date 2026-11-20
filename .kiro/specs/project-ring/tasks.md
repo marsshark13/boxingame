@@ -199,7 +199,7 @@ Conventions: "Property N" refers to the design's Correctness Properties section.
     - **Property 21: Restart identity**
     - **Validates: Requirements 12.12, 13.4, 13.6**
 
-- [ ] 10. Checkpoint – simulation core
+- [x] 10. Checkpoint – simulation core
   - Checkpoint – ensure all tests pass (`vitest --run`), ask the user if questions arise.
 
 - [ ] 11. Implement the fixed-timestep Simulation_Loop
