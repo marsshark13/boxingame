@@ -202,19 +202,19 @@ Conventions: "Property N" refers to the design's Correctness Properties section.
 - [x] 10. Checkpoint – simulation core
   - Checkpoint – ensure all tests pass (`vitest --run`), ask the user if questions arise.
 
-- [ ] 11. Implement the fixed-timestep Simulation_Loop
-  - [ ] 11.1 Implement `FixedStepLoop`
+- [x] 11. Implement the fixed-timestep Simulation_Loop
+  - [x] 11.1 Implement `FixedStepLoop`
     - `src/loop/fixedStepLoop.ts` per design §3.1: `frame(nowMs)` with accumulator, 5-Tick cap (D1) that zeroes the accumulator, invalid or non-positive deltas add 0, alpha in `[0, 1)`; `pause()`; `resume(nowMs)`
     - _Requirements: 1.2, 1.3, 1.4, 1.5, 1.6, 1.7_
-  - [ ]* 11.2 Write property test for Property 6: Accumulator model
+  - [x]* 11.2 Write property test for Property 6: Accumulator model
     - **Property 6: Accumulator model**
     - Use the `arbFrameTimes` generator
     - **Validates: Requirements 1.2, 1.3, 1.4, 1.5, 1.6, 1.7**
-  - [ ]* 11.3 Write property test for Property 5: Frame-rate independence
+  - [x]* 11.3 Write property test for Property 5: Frame-rate independence
     - **Property 5: Frame-rate independence**
     - Drive `FixedStepLoop` + `MatchDriver` at 30, 60, and 144 Hz with jitter and compare against direct stepping
     - **Validates: Requirements 1.8**
-  - [ ]* 11.4 Write unit tests for loop examples
+  - [x]* 11.4 Write unit tests for loop examples
     - Exactly 6 Ticks of backlog runs 5 and zeroes the accumulator; pause then resume after 10 s runs 0 extra Ticks; `NaN` and `Infinity` timestamps add 0
     - _Requirements: 1.3, 1.6, 1.7_
 
