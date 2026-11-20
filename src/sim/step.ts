@@ -3,6 +3,7 @@
 // stepInto(prev, next, input, cfg) advances exactly one Tick of 1/60 s (Req 1 c1). It reads
 // only `prev`, the Tick's player commands, and the compiled config (Req 2 c3, Req 3 c3).
 import type { CompiledConfig } from './config/compile';
+import { checkHealthZero, combatStep } from './combat';
 import { newFsmTickContext, transition, type FsmTickContext } from './fsm';
 import { applyMovement, updateFacing } from './movement';
 import { recordObservation } from './observation';
@@ -178,8 +179,12 @@ export function stepInto(
   applyMovement(next.fighters, moveDir, cfg);
   updateFacing(next.fighters);
 
-  // (7) Hit detection and outcomes: task 7.
-  // (8) Health-zero checks: task 7.
+  // (7) Hit detection and outcomes for both Fighters against one shared snapshot (Req 35 c4).
+  combatStep(next, cfg, ev, ctx);
+
+  // (8) Health-zero checks (Req 35 c9-c10, Req 11 c6-c8, D6, D7).
+  checkHealthZero(next, ev, ctx);
+
   // (9) Round timer and round end [P3]. M1: no-op.
 
   // (10) Game_Event emission and end-of-Gameplay_Tick bookkeeping (Req 12 c9).

@@ -115,33 +115,33 @@ Conventions: "Property N" refers to the design's Correctness Properties section.
     - Walk into left and right walls; walk into the opponent (exact `minSeparation`); even shortfall; odd shortfall with unequal and equal toward-movement; share above one Fighter's toward-movement; the wall-and-opponent case of design §7.2
     - _Requirements: 7.5, 7.6, 15.1_
 
-- [ ] 7. Implement jab hit detection, damage, and Health-zero rules (pipeline steps 7–8)
-  - [ ] 7.1 Implement the two-phase Combat_Resolver and wire it into step 7
+- [x] 7. Implement jab hit detection, damage, and Health-zero rules (pipeline steps 7–8)
+  - [x] 7.1 Implement the two-phase Combat_Resolver and wire it into step 7
     - `src/sim/combat.ts`: doubled-Fx Hitbox (mirrored by facing) and Hurtbox, strict `overlap`, `intersectionCenter`, `detectHits` (reads only; active phase, unused contact), `applyHits` (mark `contactUsed` first, `max(1, roundHalfUp(base))` damage, Health clamp, HitStun entry or `until` refresh, D41 zero-stun handling, `hit-landed` event with `hitPos` in world units)
     - Skip step 7 once a result exists
     - _Requirements: 10.1, 10.2, 10.3, 10.4, 10.5, 10.6, 10.7, 10.8, 10.9, 10.10, 10.11, 11.2, 35.4, 35.7, 35.8, 5.3_
-  - [ ] 7.2 Implement the step 8 Health-zero check and M1 result
+  - [x] 7.2 Implement the step 8 Health-zero check and M1 result
     - `checkHealthZero`: Health 0 → Defeated (overrides HitStun from step 7), `fighter-defeated` events, `result` win or draw with `match-result` global event
     - _Requirements: 11.6, 11.7, 11.8, 13.3, 35.9, 35.10, 4.10_
-  - [ ]* 7.3 Write property test for Property 13: Hits happen exactly on active overlaps
+  - [x]* 7.3 Write property test for Property 13: Hits happen exactly on active overlaps
     - **Property 13: Hits happen exactly on active overlaps**
     - **Validates: Requirements 10.1, 10.2, 10.7, 10.9**
-  - [ ]* 7.4 Write property test for Property 14: Damage and contact accounting
+  - [x]* 7.4 Write property test for Property 14: Damage and contact accounting
     - **Property 14: Damage and contact accounting**
     - **Validates: Requirements 10.3, 10.4, 10.5, 35.7**
-  - [ ]* 7.5 Write property test for Property 15: Combat resolution is order-independent
+  - [x]* 7.5 Write property test for Property 15: Combat resolution is order-independent
     - **Property 15: Combat resolution is order-independent**
     - **Validates: Requirements 10.6, 35.4**
-  - [ ]* 7.6 Write property test for Property 28: Zero hit-stun hits never enter HitStun
+  - [x]* 7.6 Write property test for Property 28: Zero hit-stun hits never enter HitStun
     - **Property 28: Zero hit-stun hits never enter HitStun**
     - **Validates: Requirements 10.10, 10.11**
-  - [ ]* 7.7 Write property test for Property 8: FSM transitions follow the table
+  - [x]* 7.7 Write property test for Property 8: FSM transitions follow the table
     - **Property 8: FSM transitions follow the table**
     - **Validates: Requirements 4.5, 4.7, 4.8, 35.2**
-  - [ ]* 7.8 Write property test for Property 9: Commands to a Fighter that cannot act have no effect
+  - [x]* 7.8 Write property test for Property 9: Commands to a Fighter that cannot act have no effect
     - **Property 9: Commands to a Fighter that cannot act have no effect**
     - **Validates: Requirements 4.6, 4.11, 7.9, 9.6**
-  - [ ]* 7.9 Write unit tests for combat outcomes and Req 35 M1 rules
+  - [x]* 7.9 Write unit tests for combat outcomes and Req 35 M1 rules
     - Overlap in active → hit; no overlap; overlap in startup and recovery; edges touching; second overlap Tick of the same attack; Trade (both apply, both attacks end, event order); Health zero during a HitStun-causing hit → Defeated; simultaneous Health 0 → draw; HitStun refresh; zero-stun jab on Attacking, Idle, Walking, and HitStun targets
     - Default-config reachability: jab connects at `minSeparation`, at `dHi`, and at every 1 Fx step in `[minSeparation, Connect_Range)` through `detectHits`
     - _Requirements: 10.2, 10.6, 10.7, 10.10, 15.1, 15.7, 35.9, 35.10, 35.12_

@@ -7,7 +7,7 @@
 // (Validates: Requirements 5.3, 5.7, 9.2, 9.3, 9.4, 9.5)
 //
 // Setup: the AI is disabled and receives no commands, so nothing can hit the player and the
-// attack is never interrupted.
+// attack is never interrupted. Early endings by a landed hit are covered by Properties 13-15.
 import { fc, test } from '@fast-check/vitest';
 import { expect } from 'vitest';
 import { createInitialState } from './state';
@@ -44,13 +44,15 @@ test.prop([arbCase])('Property 10: phases follow the Attack_Definition Tick by T
     expect(s.fighters[0].lastJabStartAt).toBe(N);
   }
 
-  // Tick N+S+A+R: the attack ends in step 3 and step 4 can accept a new command.
+  // Tick N+S+A+R: the attack ends in step 3 and step 4 can accept a new command (unless the
+  // player's jabs already defeated the AI, after which commands are ignored, Req 13 c3).
+  const accepting = s.result === null;
   const end = step(s, tickInput(endMask), cfg, { trace: true });
   expect(end.state.gameplayTick).toBe(N + total);
   expect(end.trace).toContainEqual(
     expect.objectContaining({ fighter: 'player', from: 'Attacking', to: 'Idle', trigger: 'attack-end', step: 3, at: N + total, ok: true }),
   );
   const f = end.state.fighters[0].fsm;
-  if (endMask & CMD.Jab) expect(f).toMatchObject({ kind: 'Attacking', enteredAt: N + total, phase: 'startup' });
+  if (accepting && endMask & CMD.Jab) expect(f).toMatchObject({ kind: 'Attacking', enteredAt: N + total, phase: 'startup' });
   else expect(['Idle', 'Walking']).toContain(f.kind);
 });
