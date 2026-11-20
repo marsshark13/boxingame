@@ -74,8 +74,8 @@ describe('delayed observation (Req 12 c5, c10, c13; D32)', () => {
   });
   it('uses the Match-start observation before enough history exists', () => {
     const c = cfgWith((x) => (x.ai.reactionDelay = 120));
-    let s = createInitialState(c);
-    s = runTo(s, 30, CMD.MoveRight); // the player walks toward the AI, but the AI still sees Tick 0
+    const s = runTo(createInitialState(c), 30, CMD.MoveRight, c); // the player walks toward the AI, but the AI still sees Tick 0
+    expect(s.fighters[0].x).not.toBe(-1500);
     const obsX = -1500;
     const want = obsX > s.fighters[1].x ? CMD.MoveRight : CMD.MoveLeft;
     const d = Math.abs(obsX - s.fighters[1].x);
