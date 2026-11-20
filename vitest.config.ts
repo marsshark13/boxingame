@@ -12,6 +12,8 @@ export default defineConfig({
         test: {
           name: 'sim',
           environment: 'node',
+          // Property tests run 100+ generated sequences of up to 600 Ticks each.
+          testTimeout: 30_000,
           include: [
             'src/sim/**/*.test.ts',
             'src/loop/**/*.test.ts',

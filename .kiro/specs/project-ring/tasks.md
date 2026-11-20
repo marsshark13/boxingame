@@ -75,29 +75,29 @@ Conventions: "Property N" refers to the design's Correctness Properties section.
     - FNV-1a known-answer vector; key order does not change the fingerprint; changing one value does
     - _Requirements: 5.5, 5.6, 7.7, 7.11, 9.1, 11.9, 15.1, 15.8, 3.8_
 
-- [ ] 5. Implement state, observation history, FSM table, and the Tick pipeline skeleton
-  - [ ] 5.1 Implement initial state, state copy, and the observation ring buffer
+- [x] 5. Implement state, observation history, FSM table, and the Tick pipeline skeleton
+  - [x] 5.1 Implement initial state, state copy, and the observation ring buffer
     - `src/sim/state.ts`: `createInitialState(cfg)` (Tick 0 snapshot, Idle@0, max Health, facing from positions, `rng = seedSfc32(seed)`, `configFingerprint`), `copyStateInto(next, prev)` with fixed field order and no allocation, `cloneState`
     - `src/sim/observation.ts`: `HISTORY_SIZE = 121`, `initHistory`, `pushObservation` (slot reuse), `observe`, `observationFor(h, k, startAt)` with the Match-start fallback
     - _Requirements: 4.9, 11.1, 12.9, 12.10, 12.11, 13.1, 3.8_
-  - [ ] 5.2 Implement the M1 transition table and `transition()`
+  - [x] 5.2 Implement the M1 transition table and `transition()`
     - `src/sim/fsm.ts`: `Trigger` type, `TransitionRule`, exported `M1_TRANSITIONS` data, `RULE_INDEX`, `transition()` that checks rule and step, enforces one transition per Fighter per step, sets `enteredAt = g` (HitStun refresh keeps it), and records to an opt-in trace; `activeTable(cfg)` returning the table for the current mode
     - _Requirements: 4.2, 4.5, 4.6, 4.7, 4.8, 4.10_
-  - [ ] 5.3 Implement `stepInto`/`step` with steps 1–5 and 10
+  - [x] 5.3 Implement `stepInto`/`step` with steps 1–5 and 10
     - `src/sim/step.ts`: `EventCollector` (player, ai, global queues; D10 flush), tick counters, step 1 Hit_Stop no-op, step 2b command intake (drop unknown fighters/types, `M1_ENABLED_MASK`, zero masks after a result or for Defeated), step 3 `advanceTimers` (phase recompute, `attack-end`, `stun-end`), step 4 `selectAction` (jab > movement > Idle, `lastJabStartAt`), step 5 no-op, step 10 observation push and flush; `step()` pure wrapper with optional trace
     - `src/sim/index.ts`: export `step`, `stepInto`, types, and config entry points
     - _Requirements: 1.1, 2.2, 2.4, 2.7, 4.10, 4.11, 7.2, 7.3, 7.4, 7.9, 9.2, 9.3, 9.4, 9.6, 35.1, 35.2, 35.12_
-  - [ ]* 5.4 Write property test for Property 7: Invalid commands are ignored
+  - [x]* 5.4 Write property test for Property 7: Invalid commands are ignored
     - **Property 7: Invalid commands are ignored**
     - Use `arbTickInputs(len)` with junk entries
     - **Validates: Requirements 2.2, 2.7**
-  - [ ]* 5.5 Write property test for Property 10: Attack timing
+  - [x]* 5.5 Write property test for Property 10: Attack timing
     - **Property 10: Attack timing**
     - **Validates: Requirements 5.3, 5.7, 9.2, 9.3, 9.4, 9.5**
-  - [ ]* 5.6 Write property test for Property 20: Observation history ring buffer
+  - [x]* 5.6 Write property test for Property 20: Observation history ring buffer
     - **Property 20: Observation history ring buffer**
     - **Validates: Requirements 12.9, 12.10**
-  - [ ]* 5.7 Write unit tests for initial state and non-combat FSM rules
+  - [x]* 5.7 Write unit tests for initial state and non-combat FSM rules
     - Initial state is Idle, max Health, facing each other, `tick` 0; table-driven scenarios for `move`, `stop`, `attack`, `attack-end`; jab during Attacking discarded; Walking with both directions goes Idle
     - _Requirements: 4.9, 11.1, 13.1, 15.1_
 
